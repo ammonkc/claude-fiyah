@@ -98,6 +98,34 @@ export const mergeTags = (content: string, newTags: string[]): string => {
   return `---\n${newFm.replace(/\n+$/, '')}\n---\n${m[2]!}`
 }
 
+export const upsertEntry = (journal: string, notePath: string, title: string, label: string, summary: string): string => {
+  const marker = `- [[${notePath}|`
+  const lines = journal.split('\n')
+  const i = lines.findIndex(l => l.startsWith(marker))
+  if (i === -1) return `${journal}${entryLine(notePath, title, label, summary)}`
+  lines[i] = lines[i]!.replace(/\([^()]*\)\s*$/, `(${label})`)
+  return lines.join('\n')
+}
+
+const PLAN_START = '<!-- plan:start -->'
+const PLAN_END = '<!-- plan:end -->'
+
+export const planSection = (content: string): string => `## Plan\n\n${PLAN_START}\n${content}\n${PLAN_END}\n`
+
+// Swaps only the captured plan text. Markers bound it; notes captured before markers existed end at "## Conversation" or EOF.
+export const replacePlanSection = (note: string, content: string): string => {
+  const a = note.indexOf(PLAN_START)
+  const b = note.indexOf(PLAN_END)
+  if (a !== -1 && b > a) return `${note.slice(0, a)}${PLAN_START}\n${content}\n${note.slice(b)}`
+  const h = note.indexOf('\n## Plan\n')
+  if (h === -1) return `${note.replace(/\n*$/, '\n')}\n${planSection(content)}`
+  const c = note.indexOf('\n## Conversation', h)
+  const tail = c === -1 ? '' : note.slice(c)
+  return `${note.slice(0, h + 1)}${planSection(content)}${tail ? `\n${tail.replace(/^\n/, '')}` : ''}`
+}
+
+export const loggedInLink = (note: string): string | undefined => /## Logged In\n\[\[([^\]|]+)\]\]/.exec(note)?.[1]
+
 export const entryLine = (path: string, title: string, label: string, summary: string): string =>
   `\n- [[${path}|${title}]] (${label})\n  - ${summary}\n`
 
@@ -185,7 +213,7 @@ async function summarize($: any, label: string, content: string, fallbackTag: st
   return { summary, tags }
 }
 
-type PlanInfo = { vaultPath: string; notePath: string; journalPath: string; title: string; summary: string; tags: string[] }
+type PlanInfo = { vaultPath: string; notePath: string; journalPath: string; title: string; summary: string; tags: string[]; isUpdate: boolean }
 
 async function resolvePlanFile($: any): Promise<string | undefined> {
   if (lastPlanFile) return lastPlanFile
@@ -193,6 +221,17 @@ async function resolvePlanFile($: any): Promise<string | undefined> {
   const entries: Array<{ name: string; kind: string; mtimeMs: number }> = await $.fs.list(dir).catch(() => [])
   const newest = entries.filter(x => x.kind === 'file' && x.name.endsWith('.md')).sort((a, b) => b.mtimeMs - a.mtimeMs)[0]
   return newest ? `${dir}/${newest.name}` : undefined
+}
+
+// A note is the same plan when its source_file is the same plan file, whatever its title or date prefix now are.
+async function findExistingPlanNote($: any, vaultPath: string, planFile: string): Promise<string | undefined> {
+  const dir = `${vaultPath}/Projects/Engineering/Plans`
+  const r = await $.process.run(['grep', '-rlFx', '--include=*.md', `source_file: ${planFile}`, dir])
+  const hits: string[] = r.exitCode === 0 ? r.stdout.split('\n').filter(Boolean) : []
+  if (hits.length === 0) return undefined
+  const stamped = await Promise.all(hits.map(async f => ({ f, t: (await $.fs.stat(f).catch(() => ({ mtimeMs: 0 }))).mtimeMs as number })))
+  const file = stamped.sort((x, y) => y.t - x.t)[0]!.f
+  return file.slice(vaultPath.length + 1).replace(/\.md$/, '')
 }
 
 async function capturePlan($: any, session: string): Promise<PlanInfo | undefined> {
@@ -203,9 +242,20 @@ async function capturePlan($: any, session: string): Promise<PlanInfo | undefine
   }
   const planFile = await resolvePlanFile($)
   const content: string = planFile ? await $.fs.read(planFile).catch(() => '') : ''
-  if (content.length < 20) {
+  if (!planFile || content.length < 20) {
     log($, `plan skipped: no plan content (${planFile ?? 'no plan file found'})`)
     return undefined
+  }
+
+  const existingPath = await findExistingPlanNote($, vault.path, planFile)
+  if (existingPath) {
+    const noteFile = `${vault.path}/${existingPath}.md`
+    const existing: string = await $.fs.read(noteFile)
+    await $.fs.write(noteFile, replacePlanSection(existing, content))
+    const title = /^# (.+)$/m.exec(existing)?.[1] ?? planTitle(content)
+    const d = await localDate($)
+    const journalPath = loggedInLink(existing) ?? `Journal/${d.yyyy}/${d.mm}-${MONTHS[Number(d.mm) - 1]}/${d.mm}-${d.dd}-${d.yyyy}`
+    return { vaultPath: vault.path, notePath: existingPath, journalPath, title, summary: '', tags: [], isUpdate: true }
   }
 
   const title = planTitle(content)
@@ -215,20 +265,29 @@ async function capturePlan($: any, session: string): Promise<PlanInfo | undefine
   const journalPath = `Journal/${yyyy}/${mm}-${MONTHS[Number(mm) - 1]}/${datePrefix}`
   const { summary, tags } = await summarize($, 'engineering plan', content, 'engineering-plan', 'Captured an engineering plan from Claude Code.')
 
-  const note = `---\ncreated: ${mm}/${dd}/${yyyy}\nstatus: planned\ntags:\n  - plan\n  - claude-session\nsource: Claude Code (Plan Mode)\nsession: ${session}\nsource_type: plan file\nsource_file: ${planFile}\n---\n\n# ${title}\n\n## Logged In\n[[${journalPath}]]\n\n## Plan\n\n${content}\n`
+  const note = `---\ncreated: ${mm}/${dd}/${yyyy}\nstatus: planned\ntags:\n  - plan\n  - claude-session\nsource: Claude Code (Plan Mode)\nsession: ${session}\nsource_type: plan file\nsource_file: ${planFile}\n---\n\n# ${title}\n\n## Logged In\n[[${journalPath}]]\n\n${planSection(content)}`
   await $.fs.write(`${vault.path}/${notePath}.md`, note)
-  return { vaultPath: vault.path, notePath, journalPath, title, summary, tags: tags.split(',').map(t => t.trim()).filter(Boolean) }
+  return { vaultPath: vault.path, notePath, journalPath, title, summary, tags: tags.split(',').map(t => t.trim()).filter(Boolean), isUpdate: false }
 }
 
 // Runs once the approval dialog has settled: a rejected plan is one the user is keeping for later.
 async function finalizePlan($: any, info: PlanInfo, isRejected: boolean): Promise<void> {
+  const status = isRejected ? 'saved-for-later' : 'planned'
   const noteFile = `${info.vaultPath}/${info.notePath}.md`
-  if (isRejected) await $.fs.write(noteFile, withStatus(await $.fs.read(noteFile), 'saved-for-later'))
+  const note: string = await $.fs.read(noteFile)
+  const next = withStatus(note, status)
+  if (next !== note) await $.fs.write(noteFile, next)
 
   const journalFile = `${info.vaultPath}/${info.journalPath}.md`
-  await appendFile($, journalFile, entryLine(info.notePath, info.title, isRejected ? 'saved for later' : 'planned', info.summary))
-  if (info.tags.length) await $.fs.write(journalFile, mergeTags(await $.fs.read(journalFile), info.tags))
-  log($, `plan captured${isRejected ? ' (saved-for-later)' : ''}: ${info.notePath}`)
+  const label = isRejected ? 'saved for later' : 'planned'
+  const journal: string = await $.fs.read(journalFile).catch(() => '')
+  await $.process.run(['mkdir', '-p', journalFile.slice(0, journalFile.lastIndexOf('/'))])
+  const updated = info.isUpdate && !journal.includes(`- [[${info.notePath}|`)
+    ? journal
+    : upsertEntry(journal, info.notePath, info.title, label, info.summary)
+  const withTags = info.tags.length ? mergeTags(updated, info.tags) : updated
+  if (withTags !== journal) await $.fs.write(journalFile, withTags)
+  log($, `plan ${info.isUpdate ? 'updated' : 'captured'} (${status}): ${info.notePath}`)
 }
 
 async function captureSuper($: any, session: string, path: string, content: string, m: RegExpExecArray) {
