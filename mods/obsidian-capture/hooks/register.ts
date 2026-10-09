@@ -1,6 +1,7 @@
 import type { Register } from 'claude-code'
 
 const REPORT = /\/\.claude\/reports\/[^/]+\.md$/
+const PLAN_FILE = /\/\.claude\/plans\/[^/]+\.md$/
 const SUPER = /\/docs\/superpowers\/(plans|specs)\/(\d{4})-(\d{2})-(\d{2})-(.+)\.md$/
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
@@ -36,7 +37,7 @@ export const inlineFields = (text: string): Record<string, string> => {
   return out
 }
 
-export const fallbackSummary = (text: string): string => {
+export const fallbackSummary = (text: string, empty = 'Captured from Claude Code superpowers.'): string => {
   const t = text
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/^#+\s*/gm, '')
@@ -46,7 +47,55 @@ export const fallbackSummary = (text: string): string => {
     .trim()
     .slice(0, 200)
     .trimEnd()
-  return t ? (t.length === 200 ? `${t}...` : t) : 'Captured from Claude Code superpowers.'
+  return t ? (t.length === 200 ? `${t}...` : t) : empty
+}
+
+const GENERIC_HEADINGS = new Set(['context', 'background', 'overview', 'summary', 'plan', 'approach', 'implementation', 'verification', 'notes', 'steps', 'goal', 'goals', 'problem', 'solution', 'description', 'objective', 'scope'])
+const STOP_WORDS = new Set(['a', 'an', 'the', 'with', 'and', 'of', 'for', 'to'])
+
+export const planTitle = (content: string): string => {
+  for (const raw of content.split('\n')) {
+    let line = raw.trim()
+    if (!line) continue
+    line = line.replace(/^#+\s*/, '').replace(/^plan:\s*/i, '').replace(/\s+/g, ' ').trim()
+    if (GENERIC_HEADINGS.has(line.toLowerCase())) continue
+    if (line) return line.replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim() || 'Unnamed Plan'
+  }
+  return 'Unnamed Plan'
+}
+
+export const planSlug = (title: string): string => {
+  let slug = title.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+  const words = slug.split('-').filter(Boolean)
+  if (words.length > 6) {
+    slug = words.filter((w, i) => !(STOP_WORDS.has(w) && i !== 0 && i !== words.length - 1)).join('-') || slug
+  }
+  if (slug.length > 80) {
+    const kept: string[] = []
+    let total = 0
+    for (const part of slug.split('-')) {
+      const extra = part.length + (kept.length ? 1 : 0)
+      if (total + extra > 80) break
+      kept.push(part)
+      total += extra
+    }
+    slug = kept.join('-') || slug
+  }
+  return slug || 'unnamed-plan'
+}
+
+export const withStatus = (note: string, status: string): string => note.replace(/^status: .*$/m, `status: ${status}`)
+
+export const mergeTags = (content: string, newTags: string[]): string => {
+  const m = /^---\n([\s\S]*?)\n---\n([\s\S]*)/.exec(content)
+  const block = (tags: string[]) => `tags:\n${tags.map(t => `  - ${t}\n`).join('')}`
+  if (!m) return `---\n${block(newTags)}---\n${content}`
+  const fm = m[1]!
+  const tm = /^tags:\n((?:  - .+\n)*)/m.exec(`${fm}\n`)
+  const existing = tm ? [...tm[1]!.matchAll(/  - (.+)/g)].map(x => x[1]!) : []
+  const merged = [...new Set([...existing, ...newTags])]
+  const newFm = tm ? `${fm}\n`.slice(0, tm.index) + block(merged) + `${fm}\n`.slice(tm.index + tm[0].length) : `${fm}\n${block(merged).trimEnd()}`
+  return `---\n${newFm.replace(/\n+$/, '')}\n---\n${m[2]!}`
 }
 
 export const entryLine = (path: string, title: string, label: string, summary: string): string =>
@@ -54,6 +103,7 @@ export const entryLine = (path: string, title: string, label: string, summary: s
 
 let home: string | undefined
 let vaultOption = ''
+let lastPlanFile: string | undefined
 const pending = new Set<Promise<unknown>>()
 let logChain: Promise<void> = Promise.resolve()
 
@@ -121,6 +171,66 @@ async function captureReport($: any, session: string, content: string) {
   log($, `report captured: ${noteRel}`)
 }
 
+async function summarize($: any, label: string, content: string, fallbackTag: string, emptySummary?: string): Promise<{ summary: string; tags: string }> {
+  const r = await $.model.complete({
+    model: 'haiku',
+    maxTokens: 200,
+    system: `You are a concise note-taking assistant. Given an ${label}, output exactly two lines:\nLine 1: A 1-2 sentence summary (max 200 chars). Be specific about what will be built or changed.\nLine 2: 1-2 lowercase kebab-case tags relevant to the topic (comma-separated, no # prefix).\nOutput ONLY these two lines.`,
+    prompt: `Summarise and tag this ${label}:\n\n${content}`,
+  })
+  const lines = r.isAnswered ? r.text.trim().split('\n') : []
+  const first = (lines[0] ?? '').trim()
+  const summary = (first && first.length <= 300 ? first : fallbackSummary(content, emptySummary)).replace(/\n/g, ' ')
+  const tags = (lines.length > 1 ? lines[lines.length - 1]!.trim() : '') || fallbackTag
+  return { summary, tags }
+}
+
+type PlanInfo = { vaultPath: string; notePath: string; journalPath: string; title: string; summary: string; tags: string[] }
+
+async function resolvePlanFile($: any): Promise<string | undefined> {
+  if (lastPlanFile) return lastPlanFile
+  const dir = `${await getHome($)}/.claude/plans`
+  const entries: Array<{ name: string; kind: string; mtimeMs: number }> = await $.fs.list(dir).catch(() => [])
+  const newest = entries.filter(x => x.kind === 'file' && x.name.endsWith('.md')).sort((a, b) => b.mtimeMs - a.mtimeMs)[0]
+  return newest ? `${dir}/${newest.name}` : undefined
+}
+
+async function capturePlan($: any, session: string): Promise<PlanInfo | undefined> {
+  const vault = await findVault($)
+  if (!vault) {
+    log($, `plan skipped: no usable vault${vaultOption ? ` named ${vaultOption}` : ''} in obsidian.json`)
+    return undefined
+  }
+  const planFile = await resolvePlanFile($)
+  const content: string = planFile ? await $.fs.read(planFile).catch(() => '') : ''
+  if (content.length < 20) {
+    log($, `plan skipped: no plan content (${planFile ?? 'no plan file found'})`)
+    return undefined
+  }
+
+  const title = planTitle(content)
+  const { yyyy, mm, dd } = await localDate($)
+  const datePrefix = `${mm}-${dd}-${yyyy}`
+  const notePath = `Projects/Engineering/Plans/${datePrefix}-${planSlug(title)}`
+  const journalPath = `Journal/${yyyy}/${mm}-${MONTHS[Number(mm) - 1]}/${datePrefix}`
+  const { summary, tags } = await summarize($, 'engineering plan', content, 'engineering-plan', 'Captured an engineering plan from Claude Code.')
+
+  const note = `---\ncreated: ${mm}/${dd}/${yyyy}\nstatus: planned\ntags:\n  - plan\n  - claude-session\nsource: Claude Code (Plan Mode)\nsession: ${session}\nsource_type: plan file\nsource_file: ${planFile}\n---\n\n# ${title}\n\n## Logged In\n[[${journalPath}]]\n\n## Plan\n\n${content}\n`
+  await $.fs.write(`${vault.path}/${notePath}.md`, note)
+  return { vaultPath: vault.path, notePath, journalPath, title, summary, tags: tags.split(',').map(t => t.trim()).filter(Boolean) }
+}
+
+// Runs once the approval dialog has settled: a rejected plan is one the user is keeping for later.
+async function finalizePlan($: any, info: PlanInfo, isRejected: boolean): Promise<void> {
+  const noteFile = `${info.vaultPath}/${info.notePath}.md`
+  if (isRejected) await $.fs.write(noteFile, withStatus(await $.fs.read(noteFile), 'saved-for-later'))
+
+  const journalFile = `${info.vaultPath}/${info.journalPath}.md`
+  await appendFile($, journalFile, entryLine(info.notePath, info.title, isRejected ? 'saved for later' : 'planned', info.summary))
+  if (info.tags.length) await $.fs.write(journalFile, mergeTags(await $.fs.read(journalFile), info.tags))
+  log($, `plan captured${isRejected ? ' (saved-for-later)' : ''}: ${info.notePath}`)
+}
+
 async function captureSuper($: any, session: string, path: string, content: string, m: RegExpExecArray) {
   if (content.length < 20) return
   const vault = await findVault($)
@@ -134,16 +244,7 @@ async function captureSuper($: any, session: string, path: string, content: stri
   const fields = inlineFields(content)
   const label = type === 'plan' ? 'engineering plan' : 'engineering design spec'
 
-  const r = await $.model.complete({
-    model: 'haiku',
-    maxTokens: 200,
-    system: `You are a concise note-taking assistant. Given an ${label}, output exactly two lines:\nLine 1: A 1-2 sentence summary (max 200 chars). Be specific about what will be built or changed.\nLine 2: 1-2 lowercase kebab-case tags relevant to the topic (comma-separated, no # prefix).\nOutput ONLY these two lines.`,
-    prompt: `Summarise and tag this ${label}:\n\n${content}`,
-  })
-  const lines = r.isAnswered ? r.text.trim().split('\n') : []
-  const first = (lines[0] ?? '').trim()
-  const summary = (first && first.length <= 300 ? first : fallbackSummary(content)).replace(/\n/g, ' ')
-  const newTags = (lines.length > 1 ? lines[lines.length - 1]!.trim() : '') || `engineering-${type}`
+  const { summary, tags: newTags } = await summarize($, label, content, `engineering-${type}`)
 
   const datePrefix = `${mm}-${dd}-${yyyy}`
   const notePath = `Projects/Engineering/${type === 'plan' ? 'Plans' : 'Specs'}/${datePrefix}-${slug}`
@@ -184,6 +285,7 @@ async function captureSuper($: any, session: string, path: string, content: stri
 export const register: Register = (on, options) => {
   vaultOption = typeof options?.vault === 'string' ? options.vault.trim() : ''
   on('tool.call', { tool: 'Write' }, async ($, e, next) => {
+    if (PLAN_FILE.test(e.file_path)) lastPlanFile = e.file_path
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError === true) return ran
     const isReport = REPORT.test(e.file_path)
@@ -198,6 +300,34 @@ export const register: Register = (on, options) => {
       })
       .finally(() => pending.delete(job))
     pending.add(job)
+    return ran
+  }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: 'Edit' }, ($, e, next) => {
+    if (PLAN_FILE.test(e.file_path)) lastPlanFile = e.file_path
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // Captures before the approval dialog, so a plan is saved whichever way it is answered.
+  on('tool.call', { tool: 'ExitPlanMode' }, async ($, e, next) => {
+    const session = await $.session.id()
+    const capture: Promise<PlanInfo | undefined> = capturePlan($, session).catch(err => {
+      log($, `plan capture failed: ${String(err).slice(0, 200)}`)
+      $.ui.toast(`obsidian-capture failed: ${String(err).slice(0, 80)}`)
+      return undefined
+    })
+    pending.add(capture)
+
+    const ran = await next(e)
+
+    const info = await capture
+    pending.delete(capture)
+    if (info) {
+      const done: Promise<unknown> = finalizePlan($, info, ran.deny !== undefined || ran.isError === true)
+        .catch(err => log($, `plan finalize failed: ${String(err).slice(0, 200)}`))
+        .finally(() => pending.delete(done))
+      pending.add(done)
+    }
     return ran
   }).catch(($, e, next) => next(e))
 
