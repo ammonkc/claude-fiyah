@@ -53,6 +53,7 @@ export const entryLine = (path: string, title: string, label: string, summary: s
   `\n- [[${path}|${title}]] (${label})\n  - ${summary}\n`
 
 let home: string | undefined
+let vaultOption = ''
 const pending = new Set<Promise<unknown>>()
 let logChain: Promise<void> = Promise.resolve()
 
@@ -75,10 +76,10 @@ function log($: any, line: string): void {
 async function findVault($: any): Promise<{ path: string; name: string } | undefined> {
   const h = await getHome($)
   const cfg = JSON.parse(await $.fs.read(`${h}/Library/Application Support/obsidian/obsidian.json`)) as { vaults: Record<string, { path: string; open?: boolean }> }
-  const vs = Object.values(cfg.vaults)
-  const path = (vs.find(v => v.open) ?? vs[0])?.path
-  if (!path || !path.startsWith('/')) return undefined
-  return { path, name: path.replace(/\/+$/, '').split('/').pop() as string }
+  const vs = Object.values(cfg.vaults).map(v => ({ ...v, name: v.path.replace(/\/+$/, '').split('/').pop() as string }))
+  const chosen = vaultOption ? vs.find(v => v.name === vaultOption) : (vs.find(v => v.open) ?? vs[0])
+  if (!chosen || !chosen.path.startsWith('/')) return undefined
+  return { path: chosen.path, name: chosen.name }
 }
 
 // The host's local date, not the module environment's clock.
@@ -96,7 +97,7 @@ async function appendFile($: any, file: string, text: string): Promise<void> {
 async function captureReport($: any, session: string, content: string) {
   const vault = await findVault($)
   if (!vault) {
-    log($, 'report skipped: no usable vault in obsidian.json')
+    log($, `report skipped: no usable vault${vaultOption ? ` named ${vaultOption}` : ''} in obsidian.json`)
     return
   }
 
@@ -124,7 +125,7 @@ async function captureSuper($: any, session: string, path: string, content: stri
   if (content.length < 20) return
   const vault = await findVault($)
   if (!vault) {
-    log($, 'spec skipped: no usable vault in obsidian.json')
+    log($, `spec skipped: no usable vault${vaultOption ? ` named ${vaultOption}` : ''} in obsidian.json`)
     return
   }
   const [, kind, yyyy, mm, dd, slug] = m as unknown as [string, string, string, string, string, string]
@@ -180,7 +181,8 @@ async function captureSuper($: any, session: string, path: string, content: stri
   log($, `${type} captured: ${notePath}`)
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  vaultOption = typeof options?.vault === 'string' ? options.vault.trim() : ''
   on('tool.call', { tool: 'Write' }, async ($, e, next) => {
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError === true) return ran
