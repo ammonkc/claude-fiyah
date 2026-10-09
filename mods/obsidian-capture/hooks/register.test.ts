@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 
-import { slugify, parseFrontmatter, inlineFields, fallbackSummary, firstHeading } from './register'
+import { slugify, parseFrontmatter, inlineFields, fallbackSummary, firstHeading, entryLine } from './register'
 
 test('slugify matches the shell script: ampersand, punctuation, 80 char cap', () => {
   expect(slugify('Hooks & Mods: A Review!')).toBe('hooks-and-mods-a-review')
@@ -22,4 +22,8 @@ test('inlineFields reads bold key lines used by superpowers plans', () => {
 test('firstHeading strips markdown and fallbackSummary skips code blocks', () => {
   expect(firstHeading('\n## The `Plan` *now*\ntext')).toBe('The Plan now')
   expect(fallbackSummary('# H\n```\ncode\n```\nreal text')).toBe('H real text')
+})
+
+test('entryLine starts with a newline so a tee -a append never joins the previous entry', () => {
+  expect(entryLine('P/n', 'T', 'research', 'S')).toBe('\n- [[P/n|T]] (research)\n  - S\n')
 })
