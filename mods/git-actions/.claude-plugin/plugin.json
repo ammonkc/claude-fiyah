@@ -1,0 +1,6 @@
+{
+  "name": "git-actions",
+  "version": "0.1.0",
+  "description": "Band above the prompt with git actions (commit message, commit, PR description, copy, create PR, review) once implementation is done.",
+  "types": "./types/index.d.ts"
+}

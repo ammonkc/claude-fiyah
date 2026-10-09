@@ -1,7 +1,16 @@
 {
   "name": "claude-fiyah",
-  "owner": { "name": "ammonkc" },
+  "owner": {
+    "name": "ammonkc"
+  },
   "plugins": [
-    { "name": "obsidian-capture", "source": "./mods/obsidian-capture" }
+    {
+      "name": "obsidian-capture",
+      "source": "./mods/obsidian-capture"
+    },
+    {
+      "name": "git-actions",
+      "source": "./mods/git-actions"
+    }
   ]
 }
