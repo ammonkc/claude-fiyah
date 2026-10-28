@@ -11,6 +11,50 @@
     {
       "name": "git-actions",
       "source": "./mods/git-actions"
+    },
+    {
+      "name": "plan-progress",
+      "source": "./mods/plan-progress"
+    },
+    {
+      "name": "image-view",
+      "source": "./mods/image-view"
+    },
+    {
+      "name": "next-steps",
+      "source": "./mods/next-steps"
+    },
+    {
+      "name": "notify",
+      "source": "./mods/notify"
+    },
+    {
+      "name": "prompt-coach",
+      "source": "./mods/prompt-coach"
+    },
+    {
+      "name": "prompt-drafts",
+      "source": "./mods/prompt-drafts"
+    },
+    {
+      "name": "reflect-mod",
+      "source": "./mods/reflect-mod"
+    },
+    {
+      "name": "prompt-cache-control",
+      "source": "./mods/prompt-cache-control"
+    },
+    {
+      "name": "filetree",
+      "source": "./mods/filetree"
+    },
+    {
+      "name": "flightdeck",
+      "source": "./mods/flightdeck"
+    },
+    {
+      "name": "skins",
+      "source": "./mods/skins"
     }
   ]
 }
