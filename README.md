@@ -6,6 +6,8 @@ Personal Claude Code mods.
 
 Copies reports written to `~/.claude/reports/` and superpowers plans and specs into the Obsidian vault, with a journal entry and tags. Replaces the `capture-report.sh` and `capture-superpowers.sh` hooks.
 
+Plan Mode and Superpowers plan captures also create a linked implementation prompt in `Projects/Engineering/Prompts/implement-plan-<date>-<plan-title>.md`. Search for `implement-plan` or the tags `prompt`, `implementation-prompt`, and `plan` in Obsidian or a vault search utility such as Raycast. The prompt links back to the captured plan and includes the original `source_file` path so it can be pasted into a later coding session. Recapturing a plan reuses its prompt note and preserves manual edits.
+
 Install from this folder:
 
 ```

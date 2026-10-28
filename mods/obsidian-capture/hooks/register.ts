@@ -126,6 +126,33 @@ export const replacePlanSection = (note: string, content: string): string => {
 
 export const loggedInLink = (note: string): string | undefined => /## Logged In\n\[\[([^\]|]+)\]\]/.exec(note)?.[1]
 
+export const implementationPromptPath = (notePath: string): string =>
+  `Projects/Engineering/Prompts/implement-plan-${notePath.split('/').pop()}`
+
+export const linkImplementationPrompt = (note: string, promptPath: string): string => {
+  const link = `[[${promptPath}|Implementation prompt]]`
+  if (note.includes(link)) return note
+  // Keep the link outside the replaceable plan section, including on legacy notes.
+  const section = `## Implementation Prompt\n${link}\n\n`
+  const heading = /^## Plan\n/m.exec(note)
+  return heading ? `${note.slice(0, heading.index)}${section}${note.slice(heading.index)}` : `${note.trimEnd()}\n\n${section}`
+}
+
+export const implementationPromptNote = (notePath: string, title: string, sourceFile: string, created: string, session: string): string =>
+  `---\ncreated: ${created}\ntags:\n  - prompt\n  - implementation-prompt\n  - plan\n  - claude-session\nsource: Claude Code (Implementation Prompt)\nsession: ${session}\nsource_file: ${sourceFile}\nplan_note: ${JSON.stringify(`[[${notePath}]]`)}\n---\n\n# Implement Plan: ${title}\n\n## Plan\n[[${notePath}|${title}]]\n\n## Prompt\n\nImplement the plan "${title}".\n\nRead the original plan source_file at this exact path:\n${sourceFile}\n\nIf the source file is unavailable, use the captured plan in the Obsidian note "${notePath}". If neither is accessible, ask for the plan before proceeding.\n\nIdentify the repository referenced by the plan and work from its root. Read its project instructions and inspect the current code before making changes. Check which plan steps are already complete, then implement the remaining steps. Preserve unrelated changes, run the relevant tests and checks, and report what changed, validation results, and any remaining blockers.\n`
+
+async function captureImplementationPrompt($: any, vaultPath: string, notePath: string, title: string, sourceFile: string, created: string, session: string): Promise<string> {
+  const promptPath = implementationPromptPath(notePath)
+  const file = `${vaultPath}/${promptPath}.md`
+  // Reuse the same note on recapture and preserve any edits to its prompt.
+  const existing = await $.fs.read(file).catch(() => undefined)
+  if (existing === undefined) {
+    await $.process.run(['mkdir', '-p', file.slice(0, file.lastIndexOf('/'))])
+    await $.fs.write(file, implementationPromptNote(notePath, title, sourceFile, created, session))
+  }
+  return promptPath
+}
+
 export const entryLine = (path: string, title: string, label: string, summary: string): string =>
   `\n- [[${path}|${title}]] (${label})\n  - ${summary}\n`
 
@@ -251,9 +278,11 @@ async function capturePlan($: any, session: string): Promise<PlanInfo | undefine
   if (existingPath) {
     const noteFile = `${vault.path}/${existingPath}.md`
     const existing: string = await $.fs.read(noteFile)
-    await $.fs.write(noteFile, replacePlanSection(existing, content))
     const title = /^# (.+)$/m.exec(existing)?.[1] ?? planTitle(content)
     const d = await localDate($)
+    const created = parseFrontmatter(existing).fm.created ?? `${d.mm}/${d.dd}/${d.yyyy}`
+    const promptPath = await captureImplementationPrompt($, vault.path, existingPath, title, planFile, created, session)
+    await $.fs.write(noteFile, linkImplementationPrompt(replacePlanSection(existing, content), promptPath))
     const journalPath = loggedInLink(existing) ?? `Journal/${d.yyyy}/${d.mm}-${MONTHS[Number(d.mm) - 1]}/${d.mm}-${d.dd}-${d.yyyy}`
     return { vaultPath: vault.path, notePath: existingPath, journalPath, title, summary: '', tags: [], isUpdate: true }
   }
@@ -266,7 +295,8 @@ async function capturePlan($: any, session: string): Promise<PlanInfo | undefine
   const { summary, tags } = await summarize($, 'engineering plan', content, 'engineering-plan', 'Captured an engineering plan from Claude Code.')
 
   const note = `---\ncreated: ${mm}/${dd}/${yyyy}\nstatus: planned\ntags:\n  - plan\n  - claude-session\nsource: Claude Code (Plan Mode)\nsession: ${session}\nsource_type: plan file\nsource_file: ${planFile}\n---\n\n# ${title}\n\n## Logged In\n[[${journalPath}]]\n\n${planSection(content)}`
-  await $.fs.write(`${vault.path}/${notePath}.md`, note)
+  const promptPath = await captureImplementationPrompt($, vault.path, notePath, title, planFile, `${mm}/${dd}/${yyyy}`, session)
+  await $.fs.write(`${vault.path}/${notePath}.md`, linkImplementationPrompt(note, promptPath))
   return { vaultPath: vault.path, notePath, journalPath, title, summary, tags: tags.split(',').map(t => t.trim()).filter(Boolean), isUpdate: false }
 }
 
@@ -316,7 +346,10 @@ async function captureSuper($: any, session: string, path: string, content: stri
   const ob = async (...args: string[]) => $.process.run(['obsidian', `vault=${vault.name}`, ...args])
   const esc = (s: string) => s.replace(/\n/g, '\\n')
 
-  const created = await ob('create', `path=${notePath}`, `content=${esc(note)}`, 'overwrite', 'silent')
+  const linkedNote = type === 'plan'
+    ? linkImplementationPrompt(note, await captureImplementationPrompt($, vault.path, notePath, title, path, `${mm}/${dd}/${yyyy}`, session))
+    : note
+  const created = await ob('create', `path=${notePath}`, `content=${esc(linkedNote)}`, 'overwrite', 'silent')
   if (created.exitCode !== 0) {
     log($, `${type} note create failed (${created.exitCode}): ${notePath}`)
     return
