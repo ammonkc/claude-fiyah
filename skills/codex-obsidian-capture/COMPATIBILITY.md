@@ -20,8 +20,11 @@ native plugin management and the app-server `plugin/read`, `plugin/list` and
 a disposable package's native hook summary. `.codex-plugin/marketplace.json`
 was rejected as an unsupported marketplace location. `.agents/plugins/marketplace.json`
 with a `./` local source inside its root was accepted. Source traversal outside
-that root is refused. Hence the explicit staging packager produces a new complete
-marketplace rather than using sibling paths. A minimal `.codex-plugin/plugin.json`
+that root is refused. The repository now supplies a root
+`.agents/plugins/marketplace.json` with the contained source
+`./skills/codex-obsidian-capture`, supporting direct GitHub installation. The
+optional staging packager produces a smaller complete marketplace using the
+same manifest and contained package path. A minimal `.codex-plugin/plugin.json`
 with name/version/description and `hooks/hooks.json` was recognized by plugin/read.
 
 The installed binary contains the `post-tool-use.command.input` JSON Schema:
@@ -62,6 +65,12 @@ writer for initial capture and recapture in a disposable vault; the same paths
 are reused and manual note/prompt edits survive. It removes its temporary home
 and vault afterwards. This establishes native loading and installed-runtime
 manual behavior, not automatic tool-to-hook delivery.
+
+The `--repository` mode also passed against the repository root with both
+marketplace manifests present. Codex selected `claude-fiyah-codex`, installed
+the contained package, discovered its skill and hooks, and passed installed-runtime
+capture/recapture. This verifies the checkout layout used by GitHub installation;
+a remote fetch of the new manifest requires it to be committed and pushed first.
 
 The untrusted probe reports both hooks `trustStatus: untrusted`. After explicit
 user authorization, `tests/host-smoke.py --approve-disposable-hooks --keep` staged

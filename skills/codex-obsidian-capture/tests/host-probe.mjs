@@ -4,12 +4,14 @@ import path from 'node:path';
 import os from 'node:os';
 import {spawn,spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
+import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
 import {packageMarketplace} from '../runtime/package.mjs';
 const root=await fs.mkdtemp(path.join(os.tmpdir(),'obsidian-host-probe-'));
-const home=path.join(root,'home'),marketplace=path.join(root,'marketplace');
+const repositoryMode=process.argv.includes('--repository');
+const home=path.join(root,'home'),marketplace=repositoryMode ? fileURLToPath(new URL('../../../',import.meta.url)) : path.join(root,'marketplace');
 await fs.mkdir(home);await fs.writeFile(path.join(home,'config.toml'),'cli_auth_credentials_store = "file"\n[features]\nplugins = true\nhooks = true\nremote_plugin = false\n');
-await packageMarketplace(marketplace);
+if (!repositoryMode) await packageMarketplace(marketplace);
 const env={...process.env,CODEX_HOME:home};
 const run=args=>{const r=spawnSync('codex',args,{env,encoding:'utf8'});if(r.status!==0)throw new Error(r.stderr);return JSON.parse(r.stdout);};
 const added=run(['plugin','marketplace','add',marketplace,'--json']);
@@ -37,7 +39,7 @@ try {
  await fs.appendFile(note,'\nManual note survives\n');await fs.appendFile(prompt,'\nManual prompt survives\n');
  await fs.writeFile(source,artifact('Revised engineering plan'));const second=capture();
  assert.equal(first.plan,second.plan);assert.equal(first.prompt,second.prompt);assert.match(await fs.readFile(note,'utf8'),/Revised engineering plan/);assert.match(await fs.readFile(note,'utf8'),/Manual note survives/);assert.match(await fs.readFile(prompt,'utf8'),/Manual prompt survives/);
- console.log(JSON.stringify({host:initialized.userAgent,marketplaceRecognized:!!added.marketplaceName,installedVersion:installed.version,skillNames:plugin.skills.map(x=>x.name),hooks:loaded.map(x=>({event:x.eventName,trust:x.trustStatus,pluginRootExpanded:!x.command.includes('${PLUGIN_ROOT}')})),manualCapture:true,manualRecapture:true,automaticCapture:'NOT VERIFIED: hooks are untrusted; this probe never grants trust',disposableRoot:root},null,2));
+ console.log(JSON.stringify({host:initialized.userAgent,marketplaceSource:repositoryMode ? 'repository root' : 'staged package',marketplaceRecognized:!!added.marketplaceName,installedVersion:installed.version,skillNames:plugin.skills.map(x=>x.name),hooks:loaded.map(x=>({event:x.eventName,trust:x.trustStatus,pluginRootExpanded:!x.command.includes('${PLUGIN_ROOT}')})),manualCapture:true,manualRecapture:true,automaticCapture:'NOT VERIFIED: hooks are untrusted; this probe never grants trust',disposableRoot:root},null,2));
 } finally {
  server.kill();
  for (const entry of pending.values())clearTimeout(entry.timer);

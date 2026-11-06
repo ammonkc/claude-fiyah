@@ -82,5 +82,13 @@ A separate [Codex package](skills/codex-obsidian-capture/README.md) provides the
 formatting, native permission-mediated hooks, and a manual capture command.
 The [compatibility record](skills/codex-obsidian-capture/COMPATIBILITY.md) documents
 Codex 0.167.0 evidence and remaining host validation limits. Installation is a
-separate authorized step; the staging packager creates a self-contained Codex
-marketplace without changing the Claude marketplace or live agent configuration.
+separate authorized step. Install directly from GitHub:
+
+```sh
+codex plugin marketplace add ammonkc/claude-fiyah
+codex plugin add codex-obsidian-capture@claude-fiyah-codex
+```
+
+The root `.agents/plugins/marketplace.json` supplies the Codex marketplace.
+The package documentation covers private-repository SSH access, configuration,
+hook trust, permissions, and optional local staging.

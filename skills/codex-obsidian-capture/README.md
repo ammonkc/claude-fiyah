@@ -8,9 +8,26 @@ host limits. Claude's separate plugin and marketplace retain their existing beha
 
 ## Installation (separate authorized action)
 
-Requirements: Node 22+ and Codex with plugins and command hooks. This repository
-ships a marketplace template rather than modifying its protected `.agents`
-directory. Stage a self-contained marketplace into a **new** directory:
+Requirements: Node 22+ and Codex with plugins and command hooks. Install directly
+from GitHub:
+
+```sh
+codex plugin marketplace add ammonkc/claude-fiyah
+codex plugin add codex-obsidian-capture@claude-fiyah-codex
+```
+
+For SSH authentication to this private repository, use
+`codex plugin marketplace add git@github.com:ammonkc/claude-fiyah.git` instead of
+the first command. Git must already have access to the repository.
+
+The repository's root `.agents/plugins/marketplace.json` points to the complete
+package in `skills/codex-obsidian-capture`. Codex installs the bundled runtime
+from that checkout; it does not depend on the Claude mod or sibling sources.
+The existing Claude marketplace is separate.
+
+For local checkout installation, use `codex plugin marketplace add /absolute/repository`
+and the same plugin-add command. To create a smaller standalone marketplace,
+the optional staging workflow remains available:
 
 ```sh
 node skills/codex-obsidian-capture/runtime/package.mjs /absolute/new/obsidian-marketplace
@@ -156,6 +173,7 @@ marketplace if no longer needed. Notes, source artifacts and your config remain.
 node --test skills/codex-obsidian-capture/tests/capture.test.mjs
 claude plugin test mods/obsidian-capture
 node skills/codex-obsidian-capture/tests/host-probe.mjs
+node skills/codex-obsidian-capture/tests/host-probe.mjs --repository
 sh scripts/build-obsidian-capture.sh
 ```
 
