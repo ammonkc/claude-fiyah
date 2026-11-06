@@ -20,7 +20,7 @@ codex plugin add codex-obsidian-capture@claude-fiyah-codex
 
 The staged marketplace uses `.agents/plugins/marketplace.json`; the installed
 package uses `.codex-plugin/plugin.json`, `skills/obsidian-plan/SKILL.md`, and
-`hooks/hooks.json`. All shared runtime files are included. Do not run both native
+`hooks/hooks.json`. All runtime dependencies are included. Do not run both native
 and fallback hook registration. Hooks must be enabled and reviewed/trusted through
 the host's normal hook approval flow; installation does not grant hook trust.
 Restart the Codex host after installation/configuration changes.
@@ -172,6 +172,6 @@ It approves only the staged test bundle in a new temporary CODEX_HOME and uses a
 loopback deterministic provider. It never modifies live trust or permissions.
 `--keep` retains temporary evidence; otherwise successful runs clean it up.
 
-The shared formatter's source is `mods/obsidian-capture/hooks/shared.ts`; the
-Codex package commits its bundled `runtime/shared.mjs`. Rebuild after editing the
-shared source. All automated tests use disposable vaults, never `idl`.
+The Codex formatter's source is `src/note-format.ts`; the package includes its
+bundled `runtime/shared.mjs`. Rebuild after editing the formatter source. The
+Claude mod is independent and is not modified by this package. All automated tests use disposable vaults, never `idl`.

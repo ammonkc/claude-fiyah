@@ -35,7 +35,7 @@ export async function install(home, remove=false) {
       if (targetStat && await readOptional(owner)!=='obsidian-plan-capture-v1\n') throw new Error('existing package is not installer-owned');
       // Copy all runtime dependencies. Do not consume sibling checkout files during use.
       await fs.mkdir(target,{recursive:true});
-      for (const name of ['runtime','skills','hooks','.codex-plugin','packaging','config.example.json','README.md','COMPATIBILITY.md']) {
+      for (const name of ['runtime','src','skills','hooks','.codex-plugin','packaging','config.example.json','README.md','COMPATIBILITY.md']) {
         // Existing symlinks anywhere in an upgrade destination are refused.
         async function noLinks(dir) {
           for (const e of await fs.readdir(dir,{withFileTypes:true}).catch(e=>{if(e.code==='ENOENT')return [];throw e;})) {

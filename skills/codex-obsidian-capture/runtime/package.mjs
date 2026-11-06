@@ -9,7 +9,7 @@ export async function packageMarketplace(destination) {
   const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
   const plugin=path.join(destination,'skills/codex-obsidian-capture');
   await fs.mkdir(plugin,{recursive:true});
-  for (const file of ['runtime','skills','hooks','.codex-plugin','packaging','config.example.json','README.md','COMPATIBILITY.md']) await fs.cp(path.join(root,file),path.join(plugin,file),{recursive:true});
+  for (const file of ['runtime','src','skills','hooks','.codex-plugin','packaging','config.example.json','README.md','COMPATIBILITY.md']) await fs.cp(path.join(root,file),path.join(plugin,file),{recursive:true});
   await fs.mkdir(path.join(destination,'.agents/plugins'),{recursive:true});
   await fs.copyFile(path.join(root,'packaging/marketplace.json'),path.join(destination,'.agents/plugins/marketplace.json'));
   return destination;

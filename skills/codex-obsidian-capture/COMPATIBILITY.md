@@ -120,7 +120,7 @@ filesystem access.
 CLI and stdio app-server 0.167.0 are the tested automatic hosts;
 other hosts retain the explicit skill/manual recovery path.
 
-Validation at this stage: 22 Node tests and 18 Claude regressions pass;
+Validation at this stage: 22 Node tests and 17 original Claude regressions pass;
 `git diff --check` passes. Tests include EACCES, idempotence, collisions,
 concurrent delivery, prompt/manual frontmatter preservation, partial repair,
 Unicode/traversal/symlink handling, explicit vault selection, observed
@@ -135,3 +135,6 @@ successfully in the real isolated host probe. No dependencies were installed.
 Real hook session IDs are recorded as `capture_session` when available; they do
 not become source `session` or approval metadata. Source session remains the
 artifact's explicitly supplied session_id.
+
+The Codex writer now bundles its own src/note-format.ts formatter. No helper is
+extracted into the Claude mod, and its original register.ts and tests are restored.

@@ -74,3 +74,13 @@ claude plugin install filetree@claude-fiyah
 claude plugin install flightdeck@claude-fiyah
 claude plugin install skins@claude-fiyah
 ```
+
+## Codex Obsidian plan capture
+
+A separate [Codex package](skills/codex-obsidian-capture/README.md) provides the
+`obsidian-plan` skill, explicit completed-plan artifacts, local note
+formatting, native permission-mediated hooks, and a manual capture command.
+The [compatibility record](skills/codex-obsidian-capture/COMPATIBILITY.md) documents
+Codex 0.167.0 evidence and remaining host validation limits. Installation is a
+separate authorized step; the staging packager creates a self-contained Codex
+marketplace without changing the Claude marketplace or live agent configuration.
