@@ -1,0 +1,9 @@
+{
+  "vault": "idl",
+  "plansFolder": "Projects/Engineering/Plans",
+  "promptsFolder": "Projects/Engineering/Prompts",
+  "sourceDirectory": "/absolute/agent-owned/codex/plans",
+  "automatic": true,
+  "journal": true,
+  "timezone": "Pacific/Honolulu"
+}

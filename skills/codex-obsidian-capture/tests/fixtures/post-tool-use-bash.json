@@ -1,0 +1,15 @@
+{
+  "session_id": "01a1b1fb-7da8-7c42-a797-1f33000daa07",
+  "turn_id": "01a1b1fb-7dea-7022-97bd-fd31f35a939a",
+  "transcript_path": "/disposable/obsidian-smoke/home/sessions/2026/11/06/rollout-2026-11-06T07-50-11-01a1b1fb-7da8-7c42-a797-1f33000daa07.jsonl",
+  "cwd": "/disposable/obsidian-smoke/workspace",
+  "hook_event_name": "PostToolUse",
+  "model": "fixture",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "node '/disposable/obsidian-smoke/home/plugins/cache/claude-fiyah-codex/codex-obsidian-capture/0.1.0/runtime/cli.mjs' capture --config '/disposable/obsidian-smoke/home/obsidian-capture.json' --source '/disposable/obsidian-smoke/workspace/plans/plan.md'"
+  },
+  "tool_response": "{\"ok\":true,\"plan\":\"Projects/Engineering/Plans/11-06-2026-host-smoke\",\"prompt\":\"Projects/Engineering/Prompts/implement-plan-11-06-2026-host-smoke\",\"updated\":false}\n",
+  "tool_use_id": "call_1"
+}

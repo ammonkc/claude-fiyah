@@ -1,0 +1,22 @@
+{
+  "host": "codex-cli 0.167.0",
+  "platform": "macOS 26.7.2 arm64",
+  "native_trust": "exact command and package hashes approved only in disposable CODEX_HOME",
+  "provider": "loopback deterministic Responses fixture; no model call",
+  "automatic_capture": true,
+  "automatic_recapture": true,
+  "manual_edits_preserved": true,
+  "post_tool_use_tools": [
+    "Bash",
+    "Bash",
+    "Bash",
+    "apply_patch",
+    "Bash"
+  ],
+  "stop_delivered": true,
+  "scope": "real CLI and stdio app-server event/runtime delivery; deterministic model tool sequence; Orca UI and production-model selection not tested",
+  "app_server_automatic_capture": true,
+  "app_server_automatic_recapture": true,
+  "sandbox_denial_reported": true,
+  "sandbox_denial_no_notes_or_receipt": true
+}

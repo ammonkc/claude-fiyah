@@ -1,0 +1,7 @@
+{
+  "name": "claude-fiyah-codex",
+  "owner": { "name": "ammonkc" },
+  "plugins": [
+    { "name": "codex-obsidian-capture", "source": "./skills/codex-obsidian-capture" }
+  ]
+}

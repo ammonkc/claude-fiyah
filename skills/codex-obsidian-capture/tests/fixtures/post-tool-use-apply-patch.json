@@ -1,0 +1,15 @@
+{
+  "session_id": "01a1b1fb-7da8-7c42-a797-1f33000daa07",
+  "turn_id": "01a1b1fb-7dea-7022-97bd-fd31f35a939a",
+  "transcript_path": "/disposable/obsidian-smoke/home/sessions/2026/11/06/rollout-2026-11-06T07-50-11-01a1b1fb-7da8-7c42-a797-1f33000daa07.jsonl",
+  "cwd": "/disposable/obsidian-smoke/workspace",
+  "hook_event_name": "PostToolUse",
+  "model": "fixture",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: /disposable/obsidian-smoke/workspace/plans/plan.md\n@@\n-title: \"Host smoke\"\n+title: \"Host smoke revised\"\n@@\n-Initial engineering plan\n+Revised engineering plan\n*** End Patch"
+  },
+  "tool_response": "Exit code: 0\nWall time: 0 seconds\nOutput:\nSuccess. Updated the following files:\nM /disposable/obsidian-smoke/workspace/plans/plan.md\n",
+  "tool_use_id": "call_3"
+}

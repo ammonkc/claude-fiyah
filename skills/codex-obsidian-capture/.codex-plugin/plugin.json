@@ -1,0 +1,5 @@
+{
+  "name": "codex-obsidian-capture",
+  "version": "0.1.0",
+  "description": "Capture explicit completed engineering plan artifacts and linked Obsidian implementation prompts through permission-scoped tools"
+}

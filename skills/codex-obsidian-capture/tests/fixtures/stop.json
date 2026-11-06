@@ -1,0 +1,11 @@
+{
+  "session_id": "01a1b1fb-7da8-7c42-a797-1f33000daa07",
+  "turn_id": "01a1b1fb-7dea-7022-97bd-fd31f35a939a",
+  "transcript_path": "/disposable/obsidian-smoke/home/sessions/2026/11/06/rollout-2026-11-06T07-50-11-01a1b1fb-7da8-7c42-a797-1f33000daa07.jsonl",
+  "cwd": "/disposable/obsidian-smoke/workspace",
+  "hook_event_name": "Stop",
+  "model": "fixture",
+  "permission_mode": "bypassPermissions",
+  "stop_hook_active": false,
+  "last_assistant_message": "Smoke complete."
+}
