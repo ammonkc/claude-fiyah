@@ -151,3 +151,34 @@ test('observed Codex 0.167.0 Bash, apply_patch and Stop payloads request capture
  const note=await fs.readFile(f.plan(result),'utf8');assert.ok(note.includes('capture_session: '+JSON.stringify(observed.session_id)));assert.ok(!note.includes('\nsession:'));
  assert.deepEqual(await adapt(observed,f.config,f.configFile,'/installed/cli.mjs'),{});
 });
+
+test('omitted sourceDirectory follows absolute XDG state, with fallback and explicit override independent of CODEX_HOME',async t=>{
+ const f=await fixture(t),{spawnSync}=await import('node:child_process');
+ const customState=path.join(f.root,'custom state'),fakeHome=path.join(f.root,'home'),codexHome=path.join(f.root,'dotfiles/codex/.codex');
+ await fs.writeFile(f.configFile,JSON.stringify({vaultPath:f.config.vaultPath}));
+ const moduleUrl=new URL('../runtime/capture.mjs',import.meta.url).href;
+ const resolve=xdg=>{
+  const env={...process.env,HOME:fakeHome,CODEX_HOME:codexHome};delete env.XDG_STATE_HOME;if(xdg!==undefined)env.XDG_STATE_HOME=xdg;
+  const result=spawnSync(process.execPath,['--input-type=module','-e',`import {loadConfig} from ${JSON.stringify(moduleUrl)}; console.log((await loadConfig(process.argv[1])).sourceDirectory);`,f.configFile],{env,encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);return result.stdout.trim();
+ };
+ assert.equal(resolve(customState),path.join(customState,'codex/plans'));
+ for(const xdg of [undefined,'','relative/state'])assert.equal(resolve(xdg),path.join(fakeHome,'.local/state/codex/plans'));
+ await fs.writeFile(f.configFile,JSON.stringify({sourceDirectory:f.config.sourceDirectory,vaultPath:f.config.vaultPath}));
+ assert.equal(resolve(customState),f.config.sourceDirectory);
+});
+
+test('installed CLI captures via Stow-folded config and XDG default without writing to dotfiles',async t=>{
+ const f=await fixture(t),{spawnSync}=await import('node:child_process');
+ const packageHome=path.join(f.root,'installed-home');await install(packageHome);
+ const dotfiles=path.join(f.root,'dotfiles/codex/.codex'),deployedHome=path.join(f.root,'home/.codex'),state=path.join(f.root,'state');
+ await fs.mkdir(dotfiles,{recursive:true});await fs.mkdir(path.dirname(deployedHome),{recursive:true});await fs.symlink(dotfiles,deployedHome);
+ const configText=JSON.stringify({vaultPath:f.config.vaultPath,automatic:true});await fs.writeFile(path.join(dotfiles,'obsidian-capture.json'),configText);
+ const sourceDir=path.join(state,'codex/plans');await fs.mkdir(sourceDir,{recursive:true});const source=path.join(sourceDir,'plan.md');await fs.copyFile(f.file,source);
+ const result=spawnSync(process.execPath,[path.join(packageHome,'packages/obsidian-plan-capture/runtime/cli.mjs'),'capture','--source',source],{env:{...process.env,CODEX_HOME:deployedHome,XDG_STATE_HOME:state,OBSIDIAN_CAPTURE_CONFIG:''},encoding:'utf8'});
+ assert.equal(result.status,0,result.stderr);const captured=JSON.parse(result.stdout);assert.ok(await fs.stat(f.plan(captured)));
+ assert.equal((await fs.lstat(deployedHome)).isSymbolicLink(),true);
+ assert.equal(await fs.readFile(path.join(dotfiles,'obsidian-capture.json'),'utf8'),configText);
+ assert.deepEqual(await fs.readdir(dotfiles),['obsidian-capture.json']);
+ assert.ok((await fs.readdir(sourceDir)).some(name=>name.startsWith('.capture-')));
+});

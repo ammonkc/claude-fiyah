@@ -4,9 +4,14 @@ import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { MONTHS, planSection } from './shared.mjs';
 
+const defaultSourceDirectory = () => {
+  const stateHome=process.env.XDG_STATE_HOME;
+  return path.join(stateHome && path.isAbsolute(stateHome) ? stateHome : path.join(os.homedir(), '.local', 'state'), 'codex', 'plans');
+};
+
 export const defaults = {
   vault: 'idl', plansFolder: 'Projects/Engineering/Plans', promptsFolder: 'Projects/Engineering/Prompts',
-  sourceDirectory: path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'plans'),
+  sourceDirectory: defaultSourceDirectory(),
   automatic: true, journal: true, timezone: 'Pacific/Honolulu',
 };
 export const hash = text => createHash('sha256').update(text).digest('hex');
@@ -41,7 +46,7 @@ export function parseArtifact(text) {
 }
 
 export async function loadConfig(file) {
-  const config = { ...defaults, ...JSON.parse(await fs.readFile(file, 'utf8')) };
+  const config = { ...defaults, sourceDirectory: defaultSourceDirectory(), ...JSON.parse(await fs.readFile(file, 'utf8')) };
   for (const key of ['automatic','journal']) if (typeof config[key] !== 'boolean') throw new Error(`${key} must be boolean`);
   if (!path.isAbsolute(config.sourceDirectory)) throw new Error('sourceDirectory must be absolute');
   for (const key of ['plansFolder','promptsFolder']) {

@@ -147,3 +147,11 @@ artifact's explicitly supplied session_id.
 
 The Codex writer now bundles its own src/note-format.ts formatter. No helper is
 extracted into the Claude mod, and its original register.ts and tests are restored.
+
+Source-directory configuration now defaults to XDG_STATE_HOME/codex/plans, with
+the ~/.local/state/codex/plans fallback for unset, empty or relative XDG_STATE_HOME.
+Explicit absolute sourceDirectory overrides remain supported. Configuration-file
+lookup still uses OBSIDIAN_CAPTURE_CONFIG or CODEX_HOME/obsidian-capture.json.
+The 24-test targeted suite includes subprocess checks for environment precedence
+and installed-runtime capture through a Stow-folded config directory, with
+artifacts/receipts confined to a separate state directory and the config untouched.

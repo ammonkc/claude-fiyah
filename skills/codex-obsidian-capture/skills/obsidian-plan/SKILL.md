@@ -8,8 +8,12 @@ artifact in the configured `sourceDirectory`. Do not capture questions, routine
 status messages, or small task lists. Read the configuration at
 `OBSIDIAN_CAPTURE_CONFIG` or `$CODEX_HOME/obsidian-capture.json` (default
 `~/.codex/obsidian-capture.json`). Missing configuration is a reported setup gap.
+When `sourceDirectory` is omitted, resolve it to `$XDG_STATE_HOME/codex/plans`
+using the environment inherited by the host. If XDG_STATE_HOME is unset, empty,
+or relative, use `~/.local/state/codex/plans`. An explicit absolute
+`sourceDirectory` takes precedence; do not expand shell variables inside JSON.
 The source directory is agent-owned, outside the repository and vault by default.
-Use normal filesystem tools and their current permissions.
+Create it if needed through normal filesystem tools and their current permissions.
 
 Read [the artifact contract](artifact-contract.md). Preserve `plan_id` and
 `created` across revisions and title changes; generate a UUID once for a new plan.

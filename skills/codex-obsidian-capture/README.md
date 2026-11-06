@@ -42,12 +42,48 @@ and fallback hook registration. Hooks must be enabled and reviewed/trusted throu
 the host's normal hook approval flow; installation does not grant hook trust.
 Restart the Codex host after installation/configuration changes.
 
-Copy `config.example.json` to `$CODEX_HOME/obsidian-capture.json` (normally
-`~/.codex/obsidian-capture.json`) **when separately authorized**, replace
-`sourceDirectory` with an absolute agent-owned path, and create that directory.
-Alternatively set `OBSIDIAN_CAPTURE_CONFIG` to an absolute configuration path in
-the environment inherited by the Codex host. Hook environments can differ from
-interactive shells; ensure `node` is available to the host.
+Keep `obsidian-capture.json` in your dotfiles repository and deploy it with GNU
+Stow. For example, a `codex` Stow package can contain:
+
+```text
+<dotfiles>/codex/.codex/obsidian-capture.json
+                  ↓ stow codex
+~/.codex/obsidian-capture.json → dotfiles-managed file
+```
+
+The plugin reads this symlink normally; it never rewrites its JSON configuration.
+With a custom CODEX_HOME, deploy the link there instead. Alternatively set
+`OBSIDIAN_CAPTURE_CONFIG` to an absolute configuration path in the environment
+inherited by the Codex host. Ensure `node` is available to that host.
+
+Use `config.example.json` as the template in the Stow package. You can omit
+`sourceDirectory`: it defaults to `$XDG_STATE_HOME/codex/plans`, falling back to
+`~/.local/state/codex/plans` when XDG_STATE_HOME is unset, empty, or relative.
+The environment is the one inherited by the Codex host. Create the directory
+through your usual dotfiles setup, for example:
+
+```sh
+mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/codex/plans"
+```
+
+Generated plans and capture receipts are persistent runtime state. They live
+outside the Stow-managed config and dotfiles repository, including when Stow
+folds `~/.codex` into a directory symlink. A minimal configuration is:
+
+```json
+{
+  "vault": "idl",
+  "automatic": true
+}
+```
+
+An explicit absolute `sourceDirectory` still overrides the XDG default. JSON
+paths do not expand `~`, `$HOME`, or `$XDG_STATE_HOME`; omit the field to use the
+environment-aware default. Existing explicit paths continue working. Existing
+plans under `$CODEX_HOME/plans` are not moved automatically: retain that path as
+an explicit override while finishing those plans, or move their artifacts and
+`.capture-*.json` receipts to the new state directory. Vault notes retain their
+identity through `plan_id`; manually edited implementation prompts remain intact.
 
 To make planning selection consistent, add this rule to the relevant user/project
 instructions when authorized:
@@ -66,7 +102,8 @@ Skill discovery is not guaranteed to activate for every chat plan. Explicit
 The JSON configuration defaults to vault `idl`, plan folder
 `Projects/Engineering/Plans`, prompt folder `Projects/Engineering/Prompts`,
 `automatic: true`, `journal: true`, and `timezone: "Pacific/Honolulu"`.
-`sourceDirectory` defaults to `$CODEX_HOME/plans`. Dates are MM-DD-YYYY filenames
+`sourceDirectory` defaults to `$XDG_STATE_HOME/codex/plans` (with the
+`~/.local/state/codex/plans` fallback). Dates are MM-DD-YYYY filenames
 and MM/DD/YYYY YAML values. Journal links are
 `Journal/YYYY/MM-Month/MM-DD-YYYY`. This package links the Journal note without
 writing Journal entries. Set `journal: false` to omit the link on new notes.
