@@ -1,6 +1,26 @@
 # claude-fiyah
 
-Personal Claude Code mods.
+Personal Claude Code mods, Codex plugins, and OpenCode packages.
+
+## OpenCode Worktrunk
+
+The [OpenCode 2 Worktrunk package](opencode/worktrunk/README.md) delegates native
+worktree creation, discovery and removal to the external `agent-worktree`
+helper. Source, tests and the pinned SDK lockfile live here; personal helper
+scripts, Worktrunk hooks and activation settings remain in dotfiles.
+
+Install dependencies from your stable checkout:
+
+```sh
+npm ci --ignore-scripts --prefix "$HOME/Developer/repos/ammonkc/claude-fiyah/opencode/worktrunk"
+```
+
+Add that absolute package directory to the `plugins` array in your personal
+OpenCode config using `{"package":"/absolute/path/to/claude-fiyah/opencode/worktrunk"}`.
+See the package documentation for the optional helper path, prerequisites,
+validation and [follow-up dotfiles migration](opencode/worktrunk/MIGRATION.md).
+OpenCode loads local packages directly, separately from the Claude and Codex
+marketplace manifests. No npm publication is required.
 
 ## obsidian-capture
 
