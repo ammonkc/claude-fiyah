@@ -6,6 +6,19 @@ All notable changes to the mods in this repository are recorded here. This file 
 
 Fixes from a review of every Claude mod in this repo. Copies of third-party mods are now marked patched in README.md.
 
+### filetree 0.5.3 (patched copy)
+
+- Fixed: tool hooks match only edit and shell tools. Grep, Glob and long Bash output are read before context-mode shrinks them, so read highlights work. The selected file path is quoted in prompt context, and the git poll does nothing while the pane is closed.
+
+### flightdeck 0.5.2 (patched copy)
+
+- Changed: tool results come from classic PostToolUse, PostToolUseFailure and PermissionDenied, and a refusal you give is read from its transcript row, so no tool loses its move to the background.
+- Fixed: Bedrock ARNs show as Haiku, Sonnet or Opus.
+
+### image-view 0.2.1 (patched copy)
+
+- Fixed: the poll timer is cancelled before it is armed again. Failed conversions retry, caches are bounded, and the folder lookup backs off.
+
 ### plan-progress 1.1.0 (patched copy)
 
 - Changed: tool calls are watched through `tool.check` and classic PostToolUse instead of a catch-all `tool.call` hook. The stop nudge fires at most once per turn, and the new `nudgeOpenBars` option turns it off. Bedrock ARNs show as model names. The session clock no longer stacks.

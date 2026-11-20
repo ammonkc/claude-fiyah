@@ -707,6 +707,12 @@ async function flash($: EngineInterface, tones: Record<string, string>): Promise
   })
 }
 
+/** Whether the pane is on screen; where that cannot be told, it counts as shown. */
+async function paneShown($: EngineInterface): Promise<boolean> {
+  const panes = await $.ui.panes().catch(() => null)
+  return panes === null || panes.some(p => p.id === PANE && p.isShown)
+}
+
 async function followCwd($: EngineInterface): Promise<boolean> {
   if (!follow) return false
   const cwd = await cwdOf($)
@@ -1914,10 +1920,14 @@ export const register: Register = (on, options) => {
       const shown = !t.root || t.nodes.length === 0 || (follow && t.root !== cwd) ? reset($, cwd, false, ready) : ready.then(() => (noDock ? undefined : $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })))
       await ready
       ageTick?.cancel()
-      ageTick = showAge ? $.clock.every(AGE_TICK_MS, () => $.ui.invalidate('ui.render')) : null
+      ageTick = showAge ? $.clock.every(AGE_TICK_MS, () => void paneShown($).then(shown => (shown ? $.ui.invalidate('ui.render') : undefined))) : null
       gitPoll?.cancel()
       gitStamp = null
-      gitPoll = $.clock.every(GIT_POLL_MS, () => void followCwd($).then(moved => (moved ? undefined : gitChanged($))).then(() => watchTree($)))
+      // A closed or hidden pane has nobody to show a change to: the tick asks and does nothing.
+      gitPoll = $.clock.every(
+        GIT_POLL_MS,
+        () => void paneShown($).then(shown => (shown ? followCwd($).then(moved => (moved ? undefined : gitChanged($))).then(() => watchTree($)) : undefined)),
+      )
       await shown
     })()
     return next(e)
@@ -1948,7 +1958,21 @@ export const register: Register = (on, options) => {
     return { text: `File tree on ${shortPath(root)}${follow ? ' (follows the cwd)' : ''}.` }
   })
 
-  on('tool.call', async ($, e, next) => {
+  // Only the tools this reads: a hook that may match a tool turns off that tool's move to the
+  // background, live output and Code Mode wait. A shell tool pays that cost; the rest never do.
+  // The raw shell result is taken at tool.run, beneath PostToolUse: a hook there (context-mode) may
+  // have swapped a long output for a pointer by the time tool.call's next(e) resolves.
+  const rawShell = new Map<string, unknown>()
+  on('tool.run', { tool: /^(Bash|PowerShell)$/ }, async ($, e, next) => {
+    const result = await next(e)
+    if (result.deny === undefined && !result.isError) {
+      rawShell.set(e.tool_use_id, result.result)
+      if (rawShell.size > 64) for (const k of [...rawShell.keys()].slice(0, rawShell.size - 64)) rawShell.delete(k)
+    }
+    return result
+  })
+
+  on('tool.call', { tool: /^(Edit|Write|NotebookEdit|Bash|PowerShell)$/ }, async ($, e, next) => {
     const tool: string = e.tool
     const shell = tool === 'Bash' || tool === 'PowerShell'
     if (e.tool !== 'Edit' && e.tool !== 'Write' && e.tool !== 'NotebookEdit' && !shell) return next(e)
@@ -1973,11 +1997,13 @@ export const register: Register = (on, options) => {
       void setActivities($, cur => cur.filter(a => !ids.includes(a.id)))
     }
     if (result.deny || (result.isError && !shell)) {
+      rawShell.delete(e.tool_use_id)
       if (since.mark) void $.process.run(['rm', '-f', since.mark], { timeoutMs: 3_000 }).catch(() => undefined)
       return result
     }
     if (shell) {
-      const out = bashOutputOf(result.isError ? undefined : result.result)
+      const out = bashOutputOf(result.isError ? undefined : (rawShell.get(e.tool_use_id) ?? result.result))
+      rawShell.delete(e.tool_use_id)
       const reads = showReads ? readTargets(command, cwd, out.stdout, home) : []
       const job: Job = { actions: [], since, initRepo: actions.some(a => a.init), readOnly: quiet || result.isReadOnly === true }
       if (out.backgroundTaskId) background.set(out.backgroundTaskId, { p: pending, job, reads })
@@ -2008,7 +2034,8 @@ export const register: Register = (on, options) => {
   })
 
   for (const tool of [/^Grep$/, /^Glob$/])
-    on('tool.call', { tool }, async ($, e, next) => {
+    // tool.run, not tool.call: the raw filenames, before PostToolUse swaps a long list for a pointer.
+    on('tool.run', { tool }, async ($, e, next) => {
       const result = await next(e)
       if (result.deny || result.isError || !showReads) return result
       const names = strings(has(result.result, 'filenames') ? result.result.filenames : undefined)
@@ -2018,7 +2045,7 @@ export const register: Register = (on, options) => {
       return result
     })
 
-  on('ui.message', async ($, e, next) => {
+  on('ui.message', { requestId: PANE }, async ($, e, next) => {
     if (e.requestId === PANE && e.element.startsWith('button-') && e.data && typeof e.data === 'object') {
       const id = e.element.slice('button-'.length)
       const data = headerMessage(e.data)
@@ -2129,7 +2156,7 @@ export const register: Register = (on, options) => {
     if (!(await followCwd($))) void sync($)
     const t = await get($)
     const context = [...(e.context ?? [])]
-    if (t.selected && (await exists($, t.selected))) context.push(`The user has this file selected in the file tree; "this" or "it" in the prompt likely refers to it: ${t.selected}`)
+    if (t.selected && (await exists($, t.selected))) context.push(`The user has this file selected in the file tree; "this" or "it" in the prompt likely refers to it: ${JSON.stringify(t.selected.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' '))}`)
     const mentions = [...e.text.matchAll(/@([^\s"'`]+)/g)]
       .map(m => (m[1] ?? '').replace(/[.,;:!?)]+$/, ''))
       .filter(Boolean)

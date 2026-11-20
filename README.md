@@ -78,15 +78,15 @@ Copies run the same code as upstream, so the protection comes from the audit and
 | Mod | Version | Upstream | License |
 |---|---|---|---|
 | plan-progress | 1.1.0 (patched) | zycck/claude-mods | none in repo; plugin.json says MIT |
-| image-view | 0.2.0 | jarrodwatts/claude-image-view | MIT (LICENSE) |
+| image-view | 0.2.1 (patched) | jarrodwatts/claude-image-view | MIT (LICENSE) |
 | next-steps | 1.0.0 | anthropics/claude-plugins-community | none in repo; plugin.json says MIT |
 | notify | 0.1.3 | mishgoldenberg/claude-mods | none |
 | prompt-coach | 0.1.3 | mishgoldenberg/claude-mods | none |
 | prompt-drafts | 0.1.0 | vynnlee/mods | none in repo; plugin.json says MIT |
 | reflect-mod | 3.3.0 | bayramannakov/claude-reflect | none in repo; plugin.json says MIT |
 | prompt-cache-control | 0.1.0 | davila7/claude-code-templates | none in repo; plugin.json says MIT |
-| filetree | 0.5.2 | data-goblin/claude-code-filetree | MIT (LICENSE) |
-| flightdeck | 0.5.1 | scasella/claude-flightdeck | MIT (LICENSE) |
+| filetree | 0.5.3 (patched) | data-goblin/claude-code-filetree | MIT (LICENSE) |
+| flightdeck | 0.5.2 (patched) | scasella/claude-flightdeck | MIT (LICENSE) |
 | skins | 0.6.0 (patched) | hellosverre/claude-skins | MIT (LICENSE) |
 
 The repository is private, so the copies without a license file are kept here as they are. None of them has been relicensed.

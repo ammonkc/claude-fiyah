@@ -58,6 +58,7 @@ import {
   SVG_COLORS,
   parseConfig,
   prettyModel,
+  refusedIds,
   promptLine,
   handbackOf,
   adviceLine,
@@ -231,13 +232,78 @@ async function noteMode($: EngineInterface, mode: string | undefined) {
   if (mode) await update($, main, m => (normalize(DEFAULT_MAIN, m).mode === mode ? normalize(DEFAULT_MAIN, m) : { ...normalize(DEFAULT_MAIN, m), mode }))
 }
 
+// Bedrock names models by application-inference-profile ARN, which carries no family word: the
+// ARNs the person set for each family are read once, so the dashboard can say Haiku, Sonnet or Opus.
+let aliasCache: Record<string, string> | null = null
+async function modelAliases($: EngineInterface) {
+  if (aliasCache) return aliasCache
+  const found: Record<string, string> = {}
+  const [haiku, sonnet, opus] = await Promise.all([
+    $.env.get('ANTHROPIC_DEFAULT_HAIKU_MODEL').catch(() => undefined),
+    $.env.get('ANTHROPIC_DEFAULT_SONNET_MODEL').catch(() => undefined),
+    $.env.get('ANTHROPIC_DEFAULT_OPUS_MODEL').catch(() => undefined),
+  ])
+  if (haiku) found[haiku] = 'Haiku'
+  if (sonnet) found[sonnet] = 'Sonnet'
+  if (opus) found[opus] = 'Opus'
+  aliasCache = found
+  return found
+}
+
+// What a finished call changes: the ask it settles, the turn's error and edit counts, the card's
+// last tools and the log. Both classic events below feed it; classic hooks, unlike a matcher-less
+// tool.call or tool.run, do not take away a tool's move to the background, live output or Code Mode wait.
+async function afterTool(
+  $: EngineInterface,
+  cfg: Config,
+  c: { tool: string; input: unknown; id: string; agentId?: string; didRun: boolean; hasFailed: boolean; isInterrupted?: boolean },
+) {
+  const { tool, id, agentId, didRun, hasFailed } = c
+  // Settle this call's pending ask, if it had one; skip the write (and the redraw) otherwise.
+  const g0 = await getGate($)
+  const isSettled = settleCheck(g0, id, didRun) !== g0
+  if (isSettled) await update($, gate, g => settleCheck(normalizeGate(g), id, didRun))
+  // A background agent hands its report back through this tool; an architect's report is its advice.
+  if (tool === 'SubagentHandback') {
+    const message = (c.input as { message?: unknown } | null)?.message
+    const a = agentId ? await getArchitect($) : null
+    if (a && agentId && a.ids.includes(agentId) && typeof message === 'string') {
+      const advice = adviceLine(message)
+      if (advice && advice !== a.lastAdvice) await noteAdvice($, cfg, advice)
+    }
+    return
+  }
+  if (tool === 'Agent') {
+    if (isSettled) await refreshStatus($, cfg)
+    return
+  }
+  // An interrupted call is neither an edit nor a failure: the person stopped it.
+  const isEdit = !hasFailed && didRun && !c.isInterrupted && EDIT_TOOLS.has(tool)
+  const t0 = await getTurn($)
+  if (isEdit || hasFailed || (!agentId && t0.errorStreak > 0)) {
+    await update($, turn, t => afterCall(normalize(DEFAULT_TURN, t), { inSubagent: Boolean(agentId), hasFailed, isEdit }))
+  }
+  const text = shorten(describeInput(tool, c.input), 64)
+  if (agentId) {
+    await update($, agents, list =>
+      listOf<unknown>(list)
+        .map(normalizeCard)
+        .map(card => (card.id === agentId ? noteTool(card, { tool, text, isError: hasFailed || !didRun }) : card)),
+    )
+  }
+  // The log keeps what is worth a glance: refusals, errors and edits; the rest is on the cards.
+  if (!didRun) await say($, await whoIs($, agentId), `${text}  denied`, 'error', agentId ?? null)
+  else if (hasFailed) await say($, await whoIs($, agentId), `${text}  ✗`, 'error', agentId ?? null)
+  else if (isEdit) await say($, await whoIs($, agentId), text, 'info', agentId ?? null)
+  if (isSettled || !didRun) await refreshStatus($, cfg)
+}
+
+
 // ---------------------------------------------------------------- hooks
 
 export const register: Register = (on, options) => {
   const cfg = parseConfig(options)
   const C = PALETTES[cfg.palette]
-  // tool.check carries no loop id; the tool.call around it does, keyed by the call's id.
-  const callLoop = new Map<string, string | null>()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -443,7 +509,7 @@ export const register: Register = (on, options) => {
         tool: e.tool,
         bucket: bucketOf(e.tool),
         verdict: verdict.decision === 'allow' ? 'rule' : verdict.decision,
-        inSubagent: Boolean(callLoop.get(e.tool_use_id)),
+        inSubagent: Boolean(e.agentId),
         detail: shorten(describeInput(e.tool, e.input), 90),
         at: await $.clock.now(),
       }
@@ -457,49 +523,32 @@ export const register: Register = (on, options) => {
     return verdict
   })
 
-  on('tool.call', async ($, e, next) => {
-    callLoop.set(e.tool_use_id, e.agentId ?? null)
-    const ran = await next(e).finally(() => callLoop.delete(e.tool_use_id))
-    const didRun = ran.deny === undefined
-    // Settle this call's pending ask, if it had one; skip the write (and the redraw) otherwise.
-    const g0 = await getGate($)
-    const isSettled = settleCheck(g0, e.tool_use_id, didRun) !== g0
-    if (isSettled) await update($, gate, g => settleCheck(normalizeGate(g), e.tool_use_id, didRun))
-    // A background agent hands its report back through this tool; an architect's report is its advice.
-    if (String(e.tool) === 'SubagentHandback') {
-      const message = (e as unknown as { message?: unknown }).message
-      const a = e.agentId ? await getArchitect($) : null
-      if (a && e.agentId && a.ids.includes(e.agentId) && typeof message === 'string') {
-        const advice = adviceLine(message)
-        if (advice && advice !== a.lastAdvice) await noteAdvice($, cfg, advice)
-      }
-      return ran
+  on('classic.PostToolUse', async ($, e, next) => {
+    await afterTool($, cfg, { tool: e.tool_name, input: e.tool_input, id: e.tool_use_id, agentId: e.agent_id, didRun: true, hasFailed: false })
+    return next(e)
+  })
+
+  on('classic.PostToolUseFailure', async ($, e, next) => {
+    // An interrupt is the person stopping the call, not the tool failing.
+    await afterTool($, cfg, { tool: e.tool_name, input: e.tool_input, id: e.tool_use_id, agentId: e.agent_id, didRun: true, hasFailed: !e.is_interrupt, isInterrupted: e.is_interrupt === true })
+    return next(e)
+  })
+
+  // An auto-mode denial: no call follows, so this settles its ask as refused.
+  on('classic.PermissionDenied', async ($, e, next) => {
+    await afterTool($, cfg, { tool: e.tool_name, input: e.tool_input, id: e.tool_use_id, agentId: e.agent_id, didRun: false, hasFailed: false })
+    return next(e)
+  })
+
+  // A person's refusal of a prompt raises no classic event: the error row that records it settles the ask.
+  on('session.append', { door: 'tool-result' }, async ($, e, next) => {
+    for (const id of refusedIds(e.message.content)) {
+      const g0 = await getGate($)
+      if (settleCheck(g0, id, false) === g0) continue
+      await update($, gate, g => settleCheck(normalizeGate(g), id, false))
+      await refreshStatus($, cfg)
     }
-    if (e.tool === 'Agent') {
-      if (isSettled) await refreshStatus($, cfg)
-      return ran
-    }
-    const hasFailed = didRun && ran.isError === true
-    const isEdit = !hasFailed && didRun && EDIT_TOOLS.has(e.tool)
-    const t0 = await getTurn($)
-    if (isEdit || hasFailed || (!e.agentId && t0.errorStreak > 0)) {
-      await update($, turn, t => afterCall(normalize(DEFAULT_TURN, t), { inSubagent: Boolean(e.agentId), hasFailed, isEdit }))
-    }
-    const text = shorten(describeInput(e.tool, e), 64)
-    if (e.agentId) {
-      const id = e.agentId
-      await update($, agents, list =>
-        listOf<unknown>(list)
-          .map(normalizeCard)
-          .map(c => (c.id === id ? noteTool(c, { tool: e.tool, text, isError: hasFailed || ran.deny !== undefined }) : c)),
-      )
-    }
-    // The log keeps what is worth a glance: refusals, errors and edits; the rest is on the cards.
-    if (ran.deny !== undefined) await say($, await whoIs($, e.agentId), `${text}  denied`, 'error', e.agentId ?? null)
-    else if (hasFailed) await say($, await whoIs($, e.agentId), `${text}  ✗`, 'error', e.agentId ?? null)
-    else if (isEdit) await say($, await whoIs($, e.agentId), text, 'info', e.agentId ?? null)
-    if (isSettled || !didRun) await refreshStatus($, cfg)
-    return ran
+    return next(e)
   })
 
   // A server-side review tool never reaches tool.call: it shows only in the assistant's rows.
@@ -644,7 +693,9 @@ export const register: Register = (on, options) => {
     const layout = v.layout ?? cfg.layout
     const isWide = layout === 'wide' || (layout === 'auto' && W >= 110)
     const colW = isWide ? Math.floor((W - 2) / 2) : W
-    const modelName = prettyModel(m.model)
+    const aliases = await modelAliases($)
+    const pretty = (id: string) => prettyModel(id, aliases)
+    const modelName = pretty(m.model)
     const viewed = e.props.view?.agentId ?? null
     const advising = isAdvising(a)
     const running = cards.filter(c => c.status === 'running')
@@ -1012,7 +1063,7 @@ export const register: Register = (on, options) => {
           <Box columnGap={1}>
             {shown.map((c, i) => {
               const isViewed = viewed === c.id
-              const sameModel = !c.model || prettyModel(c.model) === modelName
+              const sameModel = !c.model || pretty(c.model) === modelName
               return (
                 <Box
                   flexDirection="column"
@@ -1027,7 +1078,7 @@ export const register: Register = (on, options) => {
                     {titleLines(cardTitle(c), cardW - 7, cardW - 4)[1]}
                   </Text>
                   <Text color={C.dim} wrap="truncate">
-                    {sameModel ? c.type : `${c.type} · ${prettyModel(c.model)}`}
+                    {sameModel ? c.type : `${c.type} · ${pretty(c.model)}`}
                   </Text>
                   <Text dimColor wrap="truncate">
                     {c.steps > 0 ? `ctx ${kTokens(c.ctx)} · out ${kTokens(c.out)} · ${c.steps} st` : 'starting…'}
@@ -1054,7 +1105,7 @@ export const register: Register = (on, options) => {
           <Text bold wrap="wrap">
             {expandedCard.description || expandedCard.type}
           </Text>
-          <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)} · ${expandedCard.status} · ${expandedCard.steps} steps`}</Text>
+          <Text dimColor wrap="truncate">{`${expandedCard.type} · ${pretty(expandedCard.model)} · ${expandedCard.status} · ${expandedCard.steps} steps`}</Text>
           {expandedCard.tools.length === 0 ? <Text color={C.faint}>no tool calls yet</Text> : null}
           {expandedCard.tools.map(n => (
             <Text color={n.isError ? C.warn : C.text} wrap="truncate">

@@ -27,6 +27,7 @@ import {
   fmtResetIn,
   fmtSpeed,
   gateSummary,
+  refusedIds,
   lanes,
   limitLabel,
   limitOf,
@@ -199,6 +200,9 @@ test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never
   expect(prettyModel('claude-3-opus-20240229')).toBe('Opus 3')
   expect(prettyModel('z-ai/glm-5.3-flash-with-a-long-name')).toBe('z-ai/glm-5.3-flash-wi…')
   expect(prettyModel('')).toBe('—')
+  const aliases = { 'arn:aws:bedrock:us-east-1:1:application-inference-profile/abc': 'Opus' }
+  expect(prettyModel('arn:aws:bedrock:us-east-1:1:application-inference-profile/abc', aliases)).toBe('Opus')
+  expect(prettyModel('arn:aws:bedrock:us-east-1:1:application-inference-profile/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz', aliases)).toBe('zzzzzzzzzzzzzzzzzzzzz…')
   expect(promptLine('fix the parser')).toEqual({ who: 'you', text: 'fix the parser' })
   const hb = '<agent-message from="a1940a83d593229d5">\n[Subagent hand-back] The text below is the final report. The report follows:\n  Add gate tests: redaction edge cases.\n  - more\n</agent-message>'
   expect(handbackOf(hb)).toEqual({ from: 'a1940a83d593229d5', body: 'Add gate tests: redaction edge cases.' })
@@ -237,6 +241,10 @@ const engine = (on: On) => {
   on('ui.status', () => ({ value: undefined }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
+  on('classic.PostToolUse', () => ({}))
+  on('classic.PostToolUseFailure', () => ({}))
+  on('classic.PermissionDenied', () => ({}))
+  on('env.get', (_$, e) => ({ value: e.name === 'ANTHROPIC_DEFAULT_OPUS_MODEL' ? 'arn:aws:bedrock:us-east-1:1:application-inference-profile/opusid' : undefined }))
   return clock
 }
 
@@ -376,6 +384,44 @@ test('the server-side advisor is read from assistant rows: consulting, then on c
   await after.unmount()
 })
 
+test('only an error result worded as a refusal counts as one', () => {
+  const row = (id: string, content: unknown, isError = true) => ({ type: 'tool_result', tool_use_id: id, is_error: isError, content })
+  expect(
+    refusedIds([
+      row('a', "The user doesn't want to proceed with this tool use. The tool use was rejected."),
+      row('b', [{ type: 'text', text: 'Permission to use Bash has been denied.' }]),
+      row('c', 'command not found: nope'),
+      row('d', "The user doesn't want to proceed", false),
+    ]),
+  ).toEqual(['a', 'b'])
+  expect(refusedIds('text')).toEqual([])
+})
+
+test('a person refusing an ask settles it as denied through the error row that records it', async ($, on) => {
+  engine(on)
+  on('tool.check', () => ({ decision: 'ask' }))
+  await $.tool.check({ tool: 'Bash', input: { command: 'rm -rf build' }, tool_use_id: 'u1' })
+  await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'u2' })
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /2 pending|2 you/ })).toBeDefined()
+  await ui.unmount()
+  await $.session.append({
+    message: {
+      type: 'user',
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'u1', is_error: true, content: "The user doesn't want to proceed with this tool use. The tool use was rejected." },
+      ] as never,
+    },
+    door: 'tool-result',
+    origin: { kind: 'tool' } as never,
+    uuid: 'refusal-1',
+  })
+  const after = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await after.find({ text: /1 denied/ })).toBeDefined()
+  await after.unmount()
+})
+
 test('the gate strip fills from checks and a row opens its redacted drill-down', async ($, on) => {
   engine(on)
   on('tool.check', (_$, e) => ({ decision: e.tool === 'Read' ? 'allow' : 'ask' }))
@@ -405,10 +451,9 @@ test('config changes labels, hides panels and turns the moments off', { options:
 
 test('a consult whose start and result share one row closes, and its review flag with it', async ($, on) => {
   engine(on)
-  on('tool.call', () => ({ result: {}, text: 'ok' }))
   await $.turn.start({ text: 'go', turnId: 'T4' })
   // An edit first, so the consult is inferred as "before done" and sets the review flag.
-  await $.tool.call({ tool: 'Edit', file_path: '/x.ts', old_string: 'a', new_string: 'b' } as never)
+  await $.classic.PostToolUse({ tool_name: 'Edit', tool_input: { file_path: '/x.ts' }, tool_response: {}, tool_use_id: 'e1' })
   await $.session
     .append({
       message: {
@@ -911,15 +956,26 @@ test('a resume through agent.spawn logs once, whether its spawn or its first ste
 
 test("a subagent's turn start is its own: no prompt line, and the main turn keeps its count", async ($, on) => {
   engine(on)
-  on('tool.call', () => ({ result: {}, text: 'ok' }))
   await $.turn.start({ text: 'refactor it', turnId: 'T1' })
-  await $.tool.call({ tool: 'Edit', file_path: '/x.ts', old_string: 'a', new_string: 'b' } as never)
+  await $.classic.PostToolUse({ tool_name: 'Edit', tool_input: { file_path: '/x.ts' }, tool_response: {}, tool_use_id: 'e1' })
   await $.turn.start({ text: 'Look at the parser again', turnId: 'A1', agentId: 'sub1' })
   await $.turn.complete({ answer: '', durationMs: 1000, isAborted: false, turnId: 'T1', reason: 'answer' })
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await ui.find({ text: /Look at the parser again/ })).toBeUndefined()
   expect(await ui.find({ text: /refactor it/ })).toBeDefined()
   expect(await ui.find({ text: /· 1 edit ·/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('an interrupted edit counts as neither an edit nor an error', async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'refactor it', turnId: 'T1' })
+  await $.classic.PostToolUse({ tool_name: 'Edit', tool_input: { file_path: '/x.ts' }, tool_response: {}, tool_use_id: 'e1' })
+  await $.classic.PostToolUseFailure({ tool_name: 'Edit', tool_input: { file_path: '/y.ts' }, tool_use_id: 'e2', error: 'Interrupted', is_interrupt: true })
+  await $.turn.complete({ answer: '', durationMs: 1000, isAborted: false, turnId: 'T1', reason: 'answer' })
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /· 1 edit ·/ })).toBeDefined()
+  expect(await ui.find({ text: /✗/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -1000,7 +1056,6 @@ const busySession = async ($: Parameters<TestBody>[0], on: On) => {
   await clock.advance(3_600_000) // clocks draw as m:ss, as in a session, not as the '—' of an unknown start
   on('session.measure', (_$, e) => ({ changed: e.changed }))
   on('tool.check', (_$, e) => ({ decision: (e.tool_use_id ?? '').endsWith('7') ? 'deny' : 'allow' }))
-  on('tool.call', () => ({ result: {}, text: 'ok' }))
   let n = 0
   on('agent.spawn', (_$, e) => ({ model: 'claude-sonnet-5-5', agentId: e.subagentType.includes('advisor') ? 'adv1' : `b${++n}` }))
   const usage = { input_tokens: 4000, output_tokens: 900, cache_read_input_tokens: 120_000, cache_creation_input_tokens: 0, model: 'claude-opus-5-5' }
@@ -1031,7 +1086,7 @@ const busySession = async ($: Parameters<TestBody>[0], on: On) => {
     { tool: 'WebFetch', input: { url: 'https://example.com/a/very/long/documentation/path/for/the/loader' } },
   ]
   for (let i = 0; i < 60; i += 1) await $.tool.check({ ...tools[i % 3]!, tool_use_id: `k${i}` })
-  await $.tool.call({ tool: 'Edit', file_path: '/x/loader.ts', old_string: 'a', new_string: 'b', tool_use_id: 'edit1' } as never)
+  await $.classic.PostToolUse({ tool_name: 'Edit', tool_input: { file_path: '/x/loader.ts' }, tool_response: {}, tool_use_id: 'edit1' })
   await $.agent.spawn(spawn('fable-advisor:fable-advisor', 'final review of the loader'))
   await $.turn.complete({
     answer: 'Ship it once the configuration loader keeps its public names and the migration test covers the old shape',

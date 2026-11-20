@@ -22,13 +22,36 @@ let shownKey: string | undefined
 let written: string | undefined
 let isChecking = false
 const sizes = new Map<string, Size | null>()
-// Files whose first bytes aren't a PNG's: they never will be, so they aren't read again.
-const notPng = new Set<string>()
-// Source files sips couldn't convert, so a broken paste isn't retried on every poll.
-const unconvertible = new Set<string>()
+// Files whose first bytes aren't a PNG's, with when that was seen: not read again until NOT_PNG_TTL_MS
+// has passed, since a paste number can be written again.
+const notPng = new Map<string, number>()
+// Source files sips couldn't convert: how often it failed and when last. A broken paste isn't retried on
+// every poll, but a transient failure (a busy disk, a file still being written) gets another go.
+const unconvertible = new Map<string, { fails: number; at: number }>()
 // Small decoded copies for terminals that can't draw pictures, which get colored blocks instead.
 const thumbs = new Map<string, Thumb | null>()
 let pictures: boolean | undefined
+
+const CACHE_MAX = 64
+const NOT_PNG_TTL_MS = 60_000
+const CONVERT_RETRY_MS = 15_000
+const CONVERT_MAX_FAILS = 4
+const LOOKUP_MIN_MS = 1_000
+const LOOKUP_MAX_MS = 15_000
+// When the session's images folder is next looked for after a miss, and the wait that follows one more.
+let lookupAfter = 0
+let lookupWait = LOOKUP_MIN_MS
+let poll: { cancel(): void } | undefined
+
+// Most recently used last; the oldest entries go once the map holds more than CACHE_MAX.
+function remember<V>(map: Map<string, V>, key: string, value: V) {
+  map.delete(key)
+  map.set(key, value)
+  for (const oldest of map.keys()) {
+    if (map.size <= CACHE_MAX) break
+    map.delete(oldest)
+  }
+}
 
 // Claude Code doesn't tell mods whether its Image draws a picture, so go by the environment
 // it decides from.
@@ -68,15 +91,26 @@ async function tempRoot($: EngineInterface): Promise<string | undefined> {
 async function imagesDir($: EngineInterface): Promise<string | undefined> {
   const sessionId = await $.session.id()
   if (found?.sessionId === sessionId) return found.dir
+  const now = await $.clock.now()
+  if (now < lookupAfter) return undefined
   tmpRoot ??= await tempRoot($)
-  if (tmpRoot === undefined) return undefined
+  const dir = tmpRoot === undefined ? undefined : await findImagesDir($, tmpRoot, sessionId)
+  if (dir !== undefined) {
+    found = { sessionId, dir }
+    lookupWait = LOOKUP_MIN_MS
+    return dir
+  }
+  // A miss is usual before the first paste: look again after a growing wait, not on every poll.
+  lookupAfter = now + lookupWait
+  lookupWait = Math.min(lookupWait * 2, LOOKUP_MAX_MS)
+  return undefined
+}
+
+async function findImagesDir($: EngineInterface, tmpRoot: string, sessionId: string): Promise<string | undefined> {
   const entries = await $.fs.list(tmpRoot).catch(() => [])
   for (const entry of entries) {
     const dir = `${tmpRoot}/${entry.name}/${sessionId}/images`
-    if (entry.kind === 'dir' && (await $.fs.exists(dir))) {
-      found = { sessionId, dir }
-      return dir
-    }
+    if (entry.kind === 'dir' && (await $.fs.exists(dir))) return dir
   }
   return undefined
 }
@@ -93,19 +127,29 @@ async function pngFor($: EngineInterface, dir: string, n: number): Promise<strin
   const source = entries.find(entry => entry.kind === 'file' && entry.name.startsWith(`${n}.`))
   if (source === undefined) return undefined
   const sourcePath = `${dir}/${source.name}`
-  if (unconvertible.has(sourcePath)) return undefined
+  const failed = unconvertible.get(sourcePath)
+  if (failed !== undefined && (failed.fails >= CONVERT_MAX_FAILS || (await $.clock.now()) - failed.at < CONVERT_RETRY_MS)) return undefined
   const { exitCode } = await $.process
     .run(['sips', '-s', 'format', 'png', '-Z', '800', sourcePath, '--out', out])
     .catch(() => ({ exitCode: 1 }))
   if (exitCode === 0) return out
-  unconvertible.add(sourcePath)
+  remember(unconvertible, sourcePath, { fails: (failed?.fails ?? 0) + 1, at: await $.clock.now() })
   return undefined
 }
 
 async function describe($: EngineInterface, dir: string | undefined, n: number): Promise<PastedImage> {
   const path = dir === undefined ? undefined : await pngFor($, dir, n)
-  if (path === undefined || notPng.has(path)) return { n, path: null, size: null }
-  if (!sizes.has(path)) {
+  if (path === undefined) return { n, path: null, size: null }
+  const seenAt = notPng.get(path)
+  if (seenAt !== undefined) {
+    if ((await $.clock.now()) - seenAt < NOT_PNG_TTL_MS) return { n, path: null, size: null }
+    notPng.delete(path)
+  }
+  if (sizes.has(path)) {
+    // In use again: it goes to the back of the line for eviction.
+    remember(sizes, path, sizes.get(path) ?? null)
+    if (thumbs.has(path)) remember(thumbs, path, thumbs.get(path) ?? null)
+  } else {
     const base64 = await $.fs.read(path, { as: 'bytes' }).then(
       bytes => bytes.base64,
       () => undefined, // too big to read: still drawable, just without its aspect ratio
@@ -113,11 +157,11 @@ async function describe($: EngineInterface, dir: string | undefined, n: number):
     const head = base64 === undefined ? undefined : pngSize(base64)
     if (head === null) {
       // A file no longer than the 24-byte header may still be being written; a longer one is settled.
-      if (base64!.length > 32) notPng.add(path)
+      if (base64!.length > 32) remember(notPng, path, await $.clock.now())
       return { n, path: null, size: null }
     }
-    sizes.set(path, head ?? null)
-    if (base64 !== undefined && !(await canDrawPictures($))) thumbs.set(path, decodeThumb(Uint8Array.fromBase64(base64)))
+    remember(sizes, path, head ?? null)
+    if (base64 !== undefined && !(await canDrawPictures($))) remember(thumbs, path, decodeThumb(Uint8Array.fromBase64(base64)))
   }
   return { n, path, size: sizes.get(path) ?? null }
 }
@@ -149,7 +193,26 @@ async function check($: EngineInterface) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     pictures = undefined
-    $.clock.every(POLL_MS, () => check($))
+    // A new or resumed session's folder is looked up at once, not after an old backoff.
+    found = undefined
+    lookupAfter = 0
+    lookupWait = LOOKUP_MIN_MS
+    poll?.cancel()
+    poll = $.clock.every(POLL_MS, () => check($))
+    return next(e)
+  })
+
+  // A /clear raises no session.start after it: the poll goes on, over a fresh draft and a new session's folder.
+  on('session.end', async ($, e, next) => {
+    shownKey = undefined
+    written = undefined
+    found = undefined
+    lookupAfter = 0
+    lookupWait = LOOKUP_MIN_MS
+    if (e.reason !== 'clear' && e.reason !== 'resume') {
+      poll?.cancel()
+      poll = undefined
+    }
     return next(e)
   })
 
