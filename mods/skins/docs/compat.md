@@ -22,7 +22,7 @@ The tests run in Claude Code's own test host (`claude plugin test .`), which dra
 element tree but not a real terminal or window. A test passing on Linux for the `desktop` surface
 means the tree is right, not that the desktop app was looked at.
 
-**Tested with:** Claude Code 2.1.288 on Linux, 2026-10-10 (0.4.0 and 0.5.0). [CI](../.github/workflows/ci.yml) runs the engine tests, `claude plugin validate` and the type check on Linux, Windows and macOS on every push to main. A CI pass is not a hand check: it is marked as CI above. The README badge's minimum, 2.1.287,
+**Tested with:** Claude Code 2.1.328 on macOS with Bedrock, 2026-11-19 (0.6.0): `claude plugin validate` and `claude plugin test` pass (246 tests). This was not a live run in the terminal or the desktop app. Earlier: Claude Code 2.1.288 on Linux, 2026-10-10 (0.4.0 and 0.5.0). [CI](../.github/workflows/ci.yml) runs the engine tests, `claude plugin validate` and the type check on Linux, Windows and macOS on every push to main. A CI pass is not a hand check: it is marked as CI above. The README badge's minimum, 2.1.287,
 is the version 0.3.0 was built against.
 
 ## Performance

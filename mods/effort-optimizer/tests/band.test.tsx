@@ -13,6 +13,15 @@ const STEP = { turnId: 't1', index: 0, model: 'sonnet', messageCount: 1 } as con
 // Beneath the plugin: the judge answers `reply`, and every main or subagent request is recorded with the effort it carries.
 function rig(on: On, reply: () => string | null) {
   const judged: string[] = []
+  const log: string[] = []
+  const runs: string[][] = []
+  mock.env(on, { HOME: '/home/t' })
+  // The log is appended through /bin/sh; a move is its rotation. Nothing runs for real.
+  on('process.run', (_, e) => {
+    runs.push([...e.argv])
+    if (e.argv[0] === '/bin/sh') log.push(e.init?.stdin ?? '')
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   const efforts: Array<{ agentId?: string; effort: unknown }> = []
   on('model.complete', (_, e) => {
     judged.push(e.model)
@@ -26,7 +35,7 @@ function rig(on: On, reply: () => string | null) {
     efforts.push({ agentId: e.agentId, effort: e.effort })
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' } as never
   })
-  return { judged, efforts }
+  return { judged, efforts, log, runs }
 }
 
 async function drain(stream: AsyncGenerator<unknown, unknown>) {
@@ -160,13 +169,47 @@ test('a failed judge shows nothing', async ($, on) => {
   expect(await bandText($)).toBeUndefined()
 })
 
-test('prompts that are commands or acknowledgements are never judged', async ($, on) => {
+test('commands, memory notes and shell lines are never judged, however long', async ($, on) => {
   const clock = mock.clock(on)
   const { judged } = rig(on, () => pick('high', 0.9))
   await step($, 'medium')
-  for (const text of ['/compact', '!ls -la src', '# remember to use pnpm', 'ok', 'yes, go']) await submit($, text)
+  for (const text of [
+    '/compact keep the plan and the failing test names please',
+    '!ls -la src && git status --short && git log --oneline -3',
+    '# remember to use pnpm and never run npm in this repository',
+  ]) await submit($, text)
   await clock.settle()
   expect(judged).toEqual([])
+})
+
+test('acknowledgements and tiny replies save the judge call', async ($, on) => {
+  const clock = mock.clock(on)
+  const { judged } = rig(on, () => pick('high', 0.9))
+  await step($, 'medium')
+  for (const text of ['ok', 'yes, go', 'option 2', 'lgtm, thanks', 'do it']) await submit($, text)
+  await clock.settle()
+  expect(judged).toEqual([])
+})
+
+test('a short real task is still judged', async ($, on) => {
+  const clock = mock.clock(on)
+  const { judged } = rig(on, () => pick('high', 0.9))
+  await step($, 'medium')
+  await submit($, 'audit auth for CSRF')
+  await clock.settle()
+  expect(judged).toEqual(['haiku'])
+})
+
+test('decisions are appended to the log under HOME, never inside the plugin folder', async ($, on) => {
+  const clock = mock.clock(on)
+  const { log, runs } = rig(on, () => pick('high', 0.9))
+  await step($, 'medium')
+  await submit($, 'Why did churn go up last quarter? Dig into the numbers')
+  await clock.settle()
+  expect(log.join('')).toContain('suggested')
+  const appends = runs.filter(a => a[0] === '/bin/sh')
+  expect(appends.length).toBeGreaterThan(0)
+  expect(appends.every(a => a[4] === '/home/t/.claude/mods-logs/effort-optimizer.log')).toBe(true)
 })
 
 test('auto mode applies the level without a band', { options: { mode: 'auto' } }, async ($, on) => {
@@ -179,4 +222,13 @@ test('auto mode applies the level without a band', { options: { mode: 'auto' } }
   efforts.length = 0
   await step($, 'medium')
   expect(efforts).toEqual([{ agentId: undefined, effort: 'high' }])
+})
+
+test('a log past its size limit is moved aside at session start', async ($, on) => {
+  const { runs } = rig(on, () => pick('medium', 0.9))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: { command: 'effort-optimizer' } }) as never)
+  on('fs.stat', () => ({ value: { kind: 'file' as const, size: 300 * 1024, mtimeMs: 1, isLink: false } }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(runs).toContainEqual(['/bin/mv', '-f', '/home/t/.claude/mods-logs/effort-optimizer.log', '/home/t/.claude/mods-logs/effort-optimizer.log.1'])
 })

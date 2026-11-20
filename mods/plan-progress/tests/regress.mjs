@@ -76,54 +76,6 @@ const wordsIn = nodes =>
           ? [n.props.alt]
           : [],
   )
-// the version row's world: a marketplace install of plan-progress at version v (its manifest, and installed_plugins.json
-// under CLAUDE_CONFIG_DIR /cfg listing it at the copy's root), the releases GitHub lists, and what the row draws
-const installAs = (v, root = `/cfg/plugins/cache/mods/plan-progress/${v}`) => {
-  globalThis.ROOT = root
-  globalThis.ENV = { ...(globalThis.ENV ?? {}), CLAUDE_CONFIG_DIR: '/cfg' }
-  globalThis.FILES = {
-    [`${root}/.claude-plugin/plugin.json`]: JSON.stringify({ name: 'plan-progress', version: v }),
-    '/cfg/plugins/installed_plugins.json': JSON.stringify({ version: 2, plugins: { 'plan-progress@mods': [{ scope: 'user', installPath: root, version: v }] } }),
-  }
-}
-const release = (tag, extra = {}) => ({ tag_name: tag, draft: false, prerelease: false, html_url: `https://example.test/releases/tag/${tag}`, ...extra })
-const releasesAre = list => (globalThis.HTTP = async () => ({ status: 200, ok: true, headers: {}, text: JSON.stringify(list) }))
-const clearVersion = () => ['ROOT', 'ENV', 'FILES', 'HTTP', 'CLI', 'COMMAND_RUN'].forEach(k => delete globalThis[k])
-const versionRow = async (E, surface = 'desktop') => {
-  const w = await E.pane('settings', surface)
-  const said = wordsIn(w)
-  // the row's line: the text after its title, Version
-  const texts = w.filter(n => n.type === 'Text').map(n => (n.children ?? []).flat().join(''))
-  return { w, label: labelOf(w, 'version'), said: said.join(' / '), line: texts[texts.lastIndexOf('Version') + 1], link: w.find(n => n.type === 'Link')?.props, buttons: w.filter(n => n.type === 'Button').map(n => n.props.key) }
-}
-// the claude CLI's answers: the marketplace pulled (its exit code says), then `update --json` for the plugin
-const cliAnswers = (calls, update) => argv => {
-  calls.push(argv.slice(1).join(' '))
-  if (argv[2] === 'marketplace') return { exitCode: 0, stdout: `Refreshing…\n${JSON.stringify({ command: 'marketplace-update', outcome: 'ok', message: 'Successfully updated marketplace: mods' })}\n`, stderr: '' }
-  return { exitCode: 0, stdout: JSON.stringify(update), stderr: '' }
-}
-const UPDATED = { command: 'update', outcome: 'ok', updateOutcome: 'updated', oldVersion: '1.0.0', newVersion: '1.0.1', message: 'Plugin "plan-progress" updated from 1.0.0 to 1.0.1 for scope user. Restart to apply changes.' }
-// the settings window open on a booted copy, its version pressed (and Update after it when asked), the press's timers run
-async function pressVersion(F, ...keys) {
-  for (const key of keys) await F.press((await versionRow(F)).w, key)
-  F.tick(300)
-  await F.fireTimers()
-  return versionRow(F)
-}
-// the footer's news mark: on the desktop a blue diamond emoji in the ⚙ chip's label, on the terminal a ● inside the ⚙ Button
-const dotOf = async (E, surface) => {
-  const foot = await E.footer(surface, true)
-  if (surface === 'desktop') return foot.find(n => n.type === 'Button' && n.props.key === 'settings')?.props.label === '⚙\uFE0E \u{1F539}'
-  const gear = foot.find(n => n.type === 'Button' && n.props.key === 'settings')
-  return (gear?.children ?? []).flat().some(c => c?.type === 'Text' && c.props.color === 'suggestion' && (c.children ?? []).join('') === '●')
-}
-// the session's first check: 15 s after it starts
-const firstCheck = async E => {
-  E.tick(15_000)
-  await E.fireTimers()
-  // the timer starts the check and returns; the check runs on
-  for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0))
-}
 const hasFigure = nodes => nodes.some(n => n.type === 'Text' && (n.children ?? []).join('').includes('tok/s'))
 // every element of a drawn tree, flat
 // WCAG 2.x contrast of two colours, and a colour laid over another at some opacity, as a browser paints them
@@ -1330,375 +1282,6 @@ const C = {
       delete globalThis.OPTIONS
     }
   },
-  async version_row_shows_the_installed_version() {
-    // the window's last section, About, holds the version: this copy's own, read from its manifest, on a button that
-    // checks for a newer release; nothing is fetched until it is pressed
-    installAs('1.0.0')
-    try {
-      const F = await boot(file)
-      await F.command('plan-progress-settings')
-      const d = await versionRow(F)
-      const t = await versionRow(F, 'terminal')
-      const heads = d.w.filter(n => n.type === 'Text' && n.props.bold).map(n => n.children.join(''))
-      return [
-        `heads ${heads.join(', ')}; desktop "${d.label}", terminal "${t.label}"; "${d.line}"; fetched ${F.fetches.length}`,
-        heads.join() === 'Appearance,Behavior,About' && d.label === '↻ 1.0.0' && t.label === '↻ 1.0.0' && d.line === 'Press it to look for a newer release' && F.fetches.length === 0,
-      ]
-    } finally {
-      clearVersion()
-    }
-  },
-  async version_check_offers_the_newest_release_of_this_mod() {
-    // the marketplace repo holds several mods: only plan-progress-v tags count, drafts and pre-releases never, and the
-    // newest wins by number (1.0.10 after 1.0.9). The offer is Update and Later, with the release notes linked; Later
-    // puts the version button back. PLAN_PROGRESS_RELEASES_URL sends the check elsewhere
-    installAs('1.0.0')
-    releasesAre([release('other-mod-v9.0.0'), release('plan-progress-v2.0.0', { draft: true }), release('plan-progress-v1.1.0', { prerelease: true }), release('plan-progress-v1.0.9'), release('plan-progress-v1.0.10'), release('plan-progress-v1.0.0')])
-    try {
-      const F = await boot(file)
-      await F.command('plan-progress-settings')
-      const d = await pressVersion(F, 'version')
-      const t = await versionRow(F, 'terminal')
-      globalThis.ENV.PLAN_PROGRESS_RELEASES_URL = 'http://127.0.0.1:47901/repos/zycck/claude-mods/releases'
-      const back = await pressVersion(F, 'version-later')
-      await pressVersion(F, 'version')
-      const own = buttons => buttons.filter(k => k.startsWith('version')).join()
-      return [
-        `offer "${d.line}" ${JSON.stringify(d.link)}; buttons ${own(d.buttons)}; terminal ${own(t.buttons)}; later "${back.label}"; fetched ${F.fetches.join(' , ')}`,
-        d.line === 'Version 1.0.10 is out' &&
-          d.link?.href === 'https://example.test/releases/tag/plan-progress-v1.0.10' &&
-          d.link?.label === 'What’s new' &&
-          own(d.buttons) === 'version-update,version-later' &&
-          own(t.buttons) === 'version-update,version-later' &&
-          back.label === '↻ 1.0.0' &&
-          F.fetches[0].startsWith('https://api.github.com/repos/zycck/claude-mods/releases') &&
-          F.fetches[1] === 'http://127.0.0.1:47901/repos/zycck/claude-mods/releases',
-      ]
-    } finally {
-      clearVersion()
-    }
-  },
-  async version_check_says_latest_or_why_it_failed() {
-    // the newest release is this one: said so; a refused request or no network: said why, the button still there to try
-    // again
-    installAs('1.0.10')
-    releasesAre([release('plan-progress-v1.0.9'), release('plan-progress-v1.0.10')])
-    try {
-      const F = await boot(file)
-      await F.command('plan-progress-settings')
-      const latest = (await pressVersion(F, 'version')).line
-      globalThis.HTTP = async () => ({ status: 403, ok: false, headers: {}, text: '{"message":"API rate limit exceeded"}' })
-      const refused = (await pressVersion(F, 'version')).line
-      delete globalThis.HTTP
-      const offline = await pressVersion(F, 'version')
-      return [
-        `"${latest}" / "${refused}" / "${offline.line}" / button "${offline.label}"`,
-        latest === 'This is the latest version' && refused === 'Could not check: HTTP 403' && offline.line === 'Could not check: fetch failed: no network in the tests' && offline.label === '↻ 1.0.10',
-      ]
-    } finally {
-      clearVersion()
-    }
-  },
-  async version_update_installs_and_reloads_in_place() {
-    // Update pulls the marketplace, then updates the plugin in the scope it is installed in, then reloads the plugins
-    // once the press is over; the copy the reload loads says it is the new version
-    installAs('1.0.0')
-    releasesAre([release('plan-progress-v1.0.1')])
-    const calls = []
-    globalThis.CLI = cliAnswers(calls, UPDATED)
-    try {
-      const F = await boot(file)
-      await F.command('plan-progress-settings')
-      await pressVersion(F, 'version')
-      await F.press((await versionRow(F)).w, 'version-update')
-      const during = (await versionRow(F)).line
-      const ranBefore = F.commandRuns.length
-      F.tick(300)
-      await F.fireTimers()
-      const ran = F.commandRuns.map(r => `${r.command}:${r.args}`)
-      // the reload: the engine loads the new copy, and the old one's timers stop
-      installAs('1.0.1')
-      await F.reload()
-      const after = await versionRow(F)
-      F.tick(6000)
-      await F.fireTimers()
-      const later = (await versionRow(F)).line
-      return [
-        `cli ${calls.join(' ; ')}; during "${during}"; ran ${ranBefore} then ${ran.join()}; after "${after.line}" "${after.label}"; later "${later}"`,
-        calls.join(' ; ') === 'plugin marketplace update mods ; plugin update plan-progress@mods --json' &&
-          during === 'Updating to 1.0.1…' &&
-          ranBefore === 0 &&
-          ran.join() === 'reload-plugins:' &&
-          after.line === 'Updated to 1.0.1' &&
-          after.label === '↻ 1.0.1' &&
-          later === 'Updated to 1.0.1',
-      ]
-    } finally {
-      clearVersion()
-    }
-  },
-  async version_update_asks_for_a_restart_when_the_reload_does_not_take() {
-    // the reload ran but this copy is still the one running five seconds on, or the reload could not run: a restart
-    // finishes the update
-    installAs('1.0.0')
-    releasesAre([release('plan-progress-v1.0.1')])
-    globalThis.CLI = cliAnswers([], UPDATED)
-    try {
-      const updateOnce = async () => {
-        const F = await boot(file)
-        await F.command('plan-progress-settings')
-        await pressVersion(F, 'version')
-        await pressVersion(F, 'version-update')
-        return F
-      }
-      const F = await updateOnce()
-      const waiting = (await versionRow(F)).line
-      F.tick(5000)
-      await F.fireTimers()
-      const stale = (await versionRow(F)).line
-      globalThis.COMMAND_RUN = () => {
-        throw new Error('no command named /reload-plugins in this session')
-      }
-      const refused = (await versionRow(await updateOnce())).line
-      return [
-        `waiting "${waiting}", five seconds on "${stale}"; reload refused "${refused}"`,
-        waiting === 'Updating to 1.0.1…' && stale === 'Restart Claude Code to finish the update' && refused === 'Restart Claude Code to finish the update',
-      ]
-    } finally {
-      clearVersion()
-    }
-  },
-  async version_update_failure_says_why() {
-    // nothing new in the marketplace yet, or no claude CLI to run: said why, nothing reloaded, a new check offers it again
-    installAs('1.0.0')
-    releasesAre([release('plan-progress-v1.0.1')])
-    globalThis.CLI = cliAnswers([], { command: 'update', outcome: 'ok', updateOutcome: 'up_to_date', oldVersion: '1.0.0', newVersion: '1.0.0', message: 'plan-progress is already at the latest version (1.0.0).' })
-    try {
-      const F = await boot(file)
-      await F.command('plan-progress-settings')
-      await pressVersion(F, 'version')
-      const stale = (await pressVersion(F, 'version-update')).line
-      delete globalThis.CLI
-      await pressVersion(F, 'version')
-      const noCli = (await pressVersion(F, 'version-update')).line
-      return [
-        `"${stale}" / "${noCli}"; reloads ${F.commandRuns.length}`,
-        stale === 'Could not update: plan-progress is already at the latest version (1.0.0).' && noCli === 'Could not update: claude: not found' && F.commandRuns.length === 0,
-      ]
-    } finally {
-      clearVersion()
-    }
-  },
-  async version_update_runs_the_sessions_own_claude() {
-    // the host names the session's binary: that one runs (the desktop's is off PATH); a name that is not claude's, or
-    // none, leaves the one on PATH
-    installAs('1.0.0')
-    releasesAre([release('plan-progress-v1.0.1')])
-    globalThis.CLI = cliAnswers([], UPDATED)
-    try {
-      const runWith = async execPath => {
-        if (execPath) globalThis.ENV.CLAUDE_CODE_EXECPATH = execPath
-        else delete globalThis.ENV.CLAUDE_CODE_EXECPATH
-        const F = await boot(file)
-        await F.command('plan-progress-settings')
-        await pressVersion(F, 'version')
-        await pressVersion(F, 'version-update')
-        return F.procs.filter(c => c.includes(' plugin ')).map(c => c.split(' plugin ')[0]).join()
-      }
-      const exe = 'C:\\Users\\x\\AppData\\Local\\Claude\\claude-code\\2.1.295\\claude.exe'
-      const own = await runWith(exe)
-      const node = await runWith('/usr/local/bin/node')
-      const none = await runWith('')
-      return [`own ${own}; node ${node}; none ${none}`, own === `${exe},${exe}` && node === 'claude,claude' && none === 'claude,claude']
-    } finally {
-      clearVersion()
-    }
-  },
-  async version_row_starts_over_after_a_reload() {
-    // a reload of the mod (an option set in the window does one) cancels the old code's waits: an update cut off
-    // starts over instead of hanging on Updating; an update installed but not loaded by the reload waits for a restart
-    // at once, and pressed again it is offered, found installed by the CLI and reloaded
-    installAs('1.0.0')
-    releasesAre([release('plan-progress-v1.0.1')])
-    try {
-      globalThis.CLI = () => new Promise(() => {})
-      const F = await boot(file)
-      await F.command('plan-progress-settings')
-      await pressVersion(F, 'version')
-      void F.press((await versionRow(F)).w, 'version-update')
-      await new Promise(r => setTimeout(r, 20))
-      const during = (await versionRow(F)).line
-      await F.reload()
-      const cut = await versionRow(F)
-      globalThis.CLI = cliAnswers([], UPDATED)
-      await pressVersion(F, 'version')
-      await F.press((await versionRow(F)).w, 'version-update')
-      await F.reload()
-      const old = (await versionRow(F)).line
-      globalThis.CLI = cliAnswers([], { ...UPDATED, updateOutcome: 'up_to_date', oldVersion: '1.0.1', message: 'plan-progress is already at the latest version (1.0.1).' })
-      const runs = F.commandRuns.length
-      await pressVersion(F, 'version')
-      const again = (await pressVersion(F, 'version-update')).line
-      return [
-        `during "${during}"; reloaded "${cut.line}" [${cut.buttons.filter(k => k.startsWith('version')).join()}]; old copy back "${old}"; pressed again "${again}", reloads ${F.commandRuns.length - runs}`,
-        during === 'Updating to 1.0.1…' &&
-          cut.line === 'Press it to look for a newer release' &&
-          cut.buttons.filter(k => k.startsWith('version')).join() === 'version' &&
-          old === 'Restart Claude Code to finish the update' &&
-          again === 'Updating to 1.0.1…' &&
-          F.commandRuns.length - runs === 1,
-      ]
-    } finally {
-      clearVersion()
-    }
-  },
-  async auto_check_offers_after_a_failed_check() {
-    // a press that could not reach GitHub says so; the timed check that finds a release later offers it in its place
-    installAs('1.0.0')
-    globalThis.HTTP = async () => ({ status: 503, ok: false, headers: {}, text: '' })
-    try {
-      const F = await boot(file)
-      await F.command('plan-progress-settings')
-      const failed = (await pressVersion(F, 'version')).line
-      releasesAre([release('plan-progress-v1.0.1')])
-      await firstCheck(F)
-      const offer = (await versionRow(F)).line
-      return [`"${failed}" -> "${offer}", dot ${await dotOf(F, 'desktop')}`, failed === 'Could not check: HTTP 503' && offer === 'Version 1.0.1 is out' && (await dotOf(F, 'desktop'))]
-    } finally {
-      clearVersion()
-    }
-  },
-  async version_row_keeps_the_keyboard_ring() {
-    // a pressed check that finds a release swaps the ↻ for Update and Later: the ring goes onto Update, so Enter
-    // updates; Later or Update hands it back to the version button. A release the timer found takes no ring
-    installAs('1.0.0')
-    releasesAre([release('plan-progress-v1.0.1')])
-    globalThis.CLI = () => new Promise(() => {})
-    try {
-      const F = await boot(file)
-      await F.command('plan-progress-settings')
-      await pressVersion(F, 'version')
-      const offer = F.rings.map(r => `${r.requestId}:${r.key}`).join()
-      await pressVersion(F, 'version-later')
-      const later = F.rings.map(r => r.key).join()
-      await pressVersion(F, 'version')
-      void F.press((await versionRow(F)).w, 'version-update')
-      await new Promise(r => setTimeout(r, 20))
-      const updating = F.rings.map(r => r.key).join()
-      const G = await boot(file)
-      await firstCheck(G)
-      return [
-        `offer ${offer}; later ${later}; update ${updating}; timer ${G.rings.length}`,
-        offer === 'settings:version-update' && later === 'version-update,version' && updating === 'version-update,version,version-update,version' && G.rings.length === 0,
-      ]
-    } finally {
-      clearVersion()
-    }
-  },
-  async version_of_a_folder_install_is_not_checked() {
-    // a copy no marketplace installed (--plugin-dir, a dev mod) updates with its folder: a press says so and fetches nothing
-    globalThis.ROOT = '/work/plan-progress'
-    globalThis.FILES = { '/work/plan-progress/.claude-plugin/plugin.json': JSON.stringify({ version: '1.0.0' }) }
-    releasesAre([release('plan-progress-v1.0.1')])
-    try {
-      const F = await boot(file)
-      await F.command('plan-progress-settings')
-      const d = await pressVersion(F, 'version')
-      return [`"${d.label}" "${d.line}"; fetched ${F.fetches.length}`, d.label === '↻ 1.0.0' && d.line === 'Installed from a folder: it updates with the folder' && F.fetches.length === 0]
-    } finally {
-      clearVersion()
-    }
-  },
-  async auto_check_puts_a_dot_by_the_gear(E) {
-    // 15 s after the start the session asks for releases on its own; a newer one puts a blue dot by the footer's ⚙ and
-    // the offer in the window. What was found is kept in the store: a second session within six hours shows the dot
-    // without asking again, and the half-hourly timer asks again once six hours have passed
-    void E
-    installAs('1.0.0')
-    releasesAre([release('plan-progress-v1.0.1')])
-    const kept = new Map()
-    try {
-      const F = await boot(file, kept)
-      const before = await dotOf(F, 'desktop')
-      await firstCheck(F)
-      const desk = await dotOf(F, 'desktop')
-      const term = await dotOf(F, 'terminal')
-      await F.command('plan-progress-settings')
-      const offer = (await versionRow(F)).line
-      const G = await boot(file, kept)
-      await firstCheck(G)
-      const second = `${G.fetches.length} ${await dotOf(G, 'desktop')}`
-      G.tick(6 * 60 * 60 * 1000)
-      await G.everyTick()
-      await new Promise(r => setTimeout(r, 0))
-      return [
-        `before ${before}; after the first check fetched ${F.fetches.length}, dot desktop ${desk} terminal ${term}; window "${offer}"; second session ${second}; six hours on fetched ${G.fetches.length}`,
-        !before && F.fetches.length === 1 && desk && term && offer === 'Version 1.0.1 is out' && second === '0 true' && G.fetches.length === 1,
-      ]
-    } finally {
-      clearVersion()
-    }
-  },
-  async auto_check_stays_quiet_when_it_should(E) {
-    // nothing is asked with the window's switch off, with non-essential traffic off, or for a folder install; a failed
-    // check shows nothing; Later takes the dot away for that version, and a newer one brings it back
-    void E
-    releasesAre([release('plan-progress-v1.0.1')])
-    const out = []
-    try {
-      installAs('1.0.0')
-      const A = await boot(file)
-      await A.command('plan-progress-settings')
-      await A.press(await A.pane('settings'), 'updateCheck')
-      const switchedOff = stateOf(await A.pane('settings'), 'updateCheck')
-      await firstCheck(A)
-      out.push(`switch ${switchedOff}: fetched ${A.fetches.length}`)
-      await A.press(await A.pane('settings'), 'updateCheck')
-
-      globalThis.ENV.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
-      const B = await boot(file)
-      await firstCheck(B)
-      out.push(`no traffic: fetched ${B.fetches.length}`)
-      delete globalThis.ENV.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
-
-      clearVersion()
-      globalThis.ROOT = '/work/plan-progress'
-      globalThis.FILES = { '/work/plan-progress/.claude-plugin/plugin.json': JSON.stringify({ version: '1.0.0' }) }
-      releasesAre([release('plan-progress-v1.0.1')])
-      const C = await boot(file)
-      await firstCheck(C)
-      out.push(`folder: fetched ${C.fetches.length}`)
-
-      clearVersion()
-      installAs('1.0.0')
-      globalThis.HTTP = async () => ({ status: 500, ok: false, headers: {}, text: '' })
-      const D = await boot(file)
-      await firstCheck(D)
-      await D.command('plan-progress-settings')
-      out.push(`failed: fetched ${D.fetches.length}, dot ${await dotOf(D, 'desktop')}, line "${(await versionRow(D)).line}"`)
-
-      releasesAre([release('plan-progress-v1.0.1')])
-      const kept = new Map()
-      const F = await boot(file, kept)
-      await firstCheck(F)
-      await F.command('plan-progress-settings')
-      await F.press(await F.pane('settings'), 'version-later')
-      const G = await boot(file, kept)
-      await firstCheck(G)
-      const afterLater = await dotOf(F, 'desktop') || (await dotOf(G, 'desktop'))
-      releasesAre([release('plan-progress-v1.0.2')])
-      kept.delete('updateCheckedAt')
-      const H = await boot(file, kept)
-      await firstCheck(H)
-      out.push(`later: dot ${afterLater}; 1.0.2 out: dot ${await dotOf(H, 'desktop')}`)
-      return [
-        out.join('; '),
-        out.join('; ') === 'switch Off: fetched 0; no traffic: fetched 0; folder: fetched 0; failed: fetched 1, dot false, line "Press it to look for a newer release"; later: dot false; 1.0.2 out: dot true',
-      ]
-    } finally {
-      clearVersion()
-    }
-  },
   async settings_gear_opens_the_window(E) {
     // the ⚙ beside the footer's figure opens the settings window, and /plan-progress-settings does anywhere: a press or
     // a command is the person asking, so the pane is placed at any width; one the session cannot place says why, and so
@@ -1706,7 +1289,7 @@ const C = {
     const isRegistered = E.commands.has('plan-progress-settings')
     const pressed = await E.press(await E.footer('desktop', undefined), 'settings')
     const asked = E.panes.get('settings')
-    const isAsked = asked?.title === 'Plan progress' && asked.focus === true && asked.closeOnEscape === true && asked.rows === 12
+    const isAsked = asked?.title === 'Plan progress' && asked.focus === true && asked.closeOnEscape === true && asked.rows === 8
     await E.$.ui.close({ id: 'settings' })
     const said = (await E.command('plan-progress-settings')).text
     const isOpen = E.panes.has('settings')
@@ -2172,7 +1755,7 @@ const C = {
           const stays = w.filter(n => n.type === 'Button' && String(n.props.key).startsWith('stay-')).map(n => n.props.label)
           const states = ['twinkle', 'speed', 'autoclose', 'sounds'].map(k => stateOf(w, k))
           const isFull =
-            heads === 3 &&
+            heads === 2 &&
             said.every(x => x.trim() !== '' && !/[{}|]|undefined/.test(x)) &&
             said.some(x => x.includes('tok/s')) &&
             stays.length === 3 &&
@@ -2226,7 +1809,7 @@ const C = {
     const termLit = stayButtons(await E.pane('settings', 'terminal')).filter(n => !n.props.dimColor).length
     return [
       `blue switches ${blue.join()}; themed ${isThemed}; plain Buttons over them ${isPlainOver}; seconds cells ${cells.length}, raised ${raised.join()}; terminal ${glyphs}, picked ${termPicked}; dim while off ${isDimOff}; lit once on: desktop ${lit}, terminal ${termLit}`,
-      blue.join() === 'Effects: On,Speed: On,Sounds: On,Check for updates: On' && switches.length === 5 && isThemed && isPlainOver && cells.length === 3 && raised.join() === 'Stays for: 30 s' && glyphs === '━━●suggestion,●━━' && termPicked === '30 s' && isDimOff && lit === '30 s' && termLit === 3,
+      blue.join() === 'Effects: On,Speed: On,Sounds: On' && switches.length === 4 && isThemed && isPlainOver && cells.length === 3 && raised.join() === 'Stays for: 30 s' && glyphs === '━━●suggestion,●━━' && termPicked === '30 s' && isDimOff && lit === '30 s' && termLit === 3,
     ]
   },
   async settings_window_gives_its_lines_a_row_on_a_narrow_terminal() {
@@ -3402,10 +2985,10 @@ const C = {
       const T = await boot(file)
       await T.turnStart()
       const edits = []
-      for (let i = 0; i < 5; i++) edits.push(await T.raw('tool.call', { tool: 'Edit', tool_use_id: `e${i}` }))
+      for (let i = 0; i < 5; i++) edits.push(await T.work('Edit', false, { file_path: '/p/a.ts' }))
       const plan = await T.exitPlan({ result: { plan: ['# Fix login', '## A', '- One', '- Two', '## B', '- Three'].join('\n') } })
       await T.turnStart()
-      await T.raw('tool.call', { tool: 'Edit', tool_use_id: 'z' })
+      await T.work('Edit', false, { file_path: '/p/a.ts' })
       const stop = await T.stop('Done.')
       // the plan's bar is open, so a message would carry the open-bars line
       const submit = await T.submit()
@@ -3438,7 +3021,7 @@ const C = {
       await T.turnStart()
       await T.reload()
       const edits = []
-      for (let i = 0; i < 5; i++) edits.push(await T.raw('tool.call', { tool: 'Edit', tool_use_id: `r${i}` }))
+      for (let i = 0; i < 5; i++) edits.push(await T.work('Edit', false, { file_path: '/p/a.ts' }))
       const denied = edits.filter(r => r?.deny).length
       void E
       return [`restored bars ${restored}, lines on the first message ${first}; after a reload mid-turn, edits refused ${denied}`, restored === 1 && first === 0 && denied === 0]
@@ -4878,7 +4461,7 @@ const C = {
     await E.turnStart()
     const plan = 'C:\\Users\\me\\.claude\\plans\\fix-login.md'
     let refused = 0
-    for (let i = 0; i < 6; i++) if ((await E.raw('tool.call', { tool: i ? 'Edit' : 'Write', file_path: plan, tool_use_id: `p${i}` })).deny) refused++
+    for (let i = 0; i < 6; i++) if ((await E.work(i ? 'Edit' : 'Write', false, { file_path: plan })).deny) refused++
     const edits = []
     for (let i = 0; i < 4; i++) edits.push((await E.work('Edit')).deny ? 'refused' : 'ran')
     return [`plan file writes refused ${refused}/6; then edits elsewhere: ${edits.join(', ')}`, refused === 0 && edits.join() === 'ran,ran,ran,refused']
@@ -4889,9 +4472,9 @@ const C = {
     await E.raw('prompt.attachment', { type: 'plan_mode', detail: { planFilePath: 'D:\\work\\docs\\plans\\PLAN.md' } })
     await E.turnStart()
     let refused = 0
-    for (let i = 0; i < 6; i++) if ((await E.raw('tool.call', { tool: 'Write', file_path: 'D:/work/docs/plans/PLAN.md', tool_use_id: `p${i}` })).deny) refused++
+    for (let i = 0; i < 6; i++) if ((await E.work('Write', false, { file_path: 'D:/work/docs/plans/PLAN.md' })).deny) refused++
     const edits = []
-    for (let i = 0; i < 4; i++) edits.push((await E.raw('tool.call', { tool: 'Edit', file_path: `D:/work/docs/plans/notes${i}.md`, tool_use_id: `e${i}` })).deny ? 'refused' : 'ran')
+    for (let i = 0; i < 4; i++) edits.push((await E.work('Edit', false, { file_path: `D:/work/docs/plans/notes${i}.md` })).deny ? 'refused' : 'ran')
     return [`plan file writes refused ${refused}/6; then edits next to it: ${edits.join(', ')}`, refused === 0 && edits.join() === 'ran,ran,ran,refused']
   },
   async question_in_any_script_marks_the_bar_waiting(E) {
@@ -4911,7 +4494,7 @@ const C = {
     // the bar turns amber, and the turn is not sent back
     await E.turnStart()
     await create(E)
-    await E.raw('tool.call', { tool: 'Bash', command: 'npm run dev', run_in_background: true, tool_use_id: 'b1' })
+    await E.work('Bash', false, { command: 'npm run dev', run_in_background: true })
     const msg = 'The dev server is up on :5173. Which page should I check first?'
     const r = await E.raw('classic.Stop', { stop_hook_active: false, last_assistant_message: msg, background_tasks: [{ id: 'b1', description: 'npm run dev' }] })
     return [`bar ${E.bar('t').state}, stop ${r.block ? 'sent back' : 'passes'}`, E.bar('t').state === 'needs_input' && !r.block]
@@ -4924,7 +4507,7 @@ const C = {
     await E.work('Edit')
     const stop = tasks => E.raw('classic.Stop', { stop_hook_active: false, last_assistant_message: 'Started it.', background_tasks: tasks })
     const listed = await stop([{ id: 'b1', description: 'npm run build' }])
-    await E.raw('tool.call', { tool: 'Bash', command: 'npm run dev', run_in_background: true, tool_use_id: 'b2' })
+    await E.work('Bash', false, { command: 'npm run dev', run_in_background: true })
     const started = await stop([])
     await E.work('Edit')
     const neither = await stop([])
@@ -5198,6 +4781,67 @@ const C = {
     await E.step('h')
     const names = (await E.view('t')).strips.map(src => (src.match(/class="sn">(.*?)<\/text>/)?.[1] ?? '').replace(/<[^>]*>/g, ''))
     return [names.join('; '), names.join('|') === 'Sonnet helper (sonnet 4)|Haiku helper (haiku 4.5)']
+  },
+  async bedrock_profiles_show_their_family_not_the_arn() {
+    // a Bedrock inference profile is an ARN that names no model: the id the session maps to Haiku (or Sonnet, Opus) in
+    // ANTHROPIC_DEFAULT_*_MODEL says "Haiku"; any other ARN shows the tail of its id, never the whole ARN
+    const head = 'arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/'
+    const mapped = `${head}abc123xyz987`
+    const other = `${head}qqqqwwwweeeerrrrtttt`
+    globalThis.ENV = { ANTHROPIC_DEFAULT_HAIKU_MODEL: mapped, ANTHROPIC_DEFAULT_SONNET_MODEL: `${head}sonnetid` }
+    try {
+      const F = await boot(file)
+      await create(F)
+      for (const [id, model] of [['m', mapped], ['s', `${head}sonnetid`], ['o', other], ['c', 'claude-haiku-4-5-20251001']]) {
+        await F.spawn(id, `Agent ${id}`)
+        await F.stream([], { agentId: id, model })
+      }
+      const names = (await F.view('t')).strips.map(src => (src.match(/class="sn">(.*?)<\/text>/)?.[1] ?? '').replace(/<[^>]*>/g, ''))
+      const got = names.join('|')
+      return [got, got === 'Agent m (Haiku)|Agent s (Sonnet)|Agent o (…eeerrrrtttt)|Agent c (haiku 4.5)']
+    } finally {
+      delete globalThis.ENV
+    }
+  },
+  async stop_sends_an_open_bar_back_once_per_turn(E) {
+    // a turn that did work and left a bar open is sent back one time: a second Stop of the same turn lets it go, the
+    // next turn is asked again. nudgeOpenBars off, it is never sent back
+    await E.turnStart()
+    await create(E)
+    await E.work('Edit')
+    const first = await E.stop('Done.')
+    const same = await E.stop('Done.')
+    await E.turnStart()
+    await E.work('Edit')
+    const next = await E.stop('Done.')
+    globalThis.OPTIONS = { nudgeOpenBars: false }
+    try {
+      const F = await boot(file)
+      await F.turnStart()
+      await create(F)
+      await F.work('Edit')
+      const off = await F.stop('Done.')
+      const mark = r => (r.block ? 'sent back' : 'passes')
+      return [`first ${mark(first)}, same turn ${mark(same)}, next turn ${mark(next)}; option off ${mark(off)}`, !!first.block && !same.block && !!next.block && !off.block]
+    } finally {
+      delete globalThis.OPTIONS
+    }
+  },
+  async no_tool_hook_may_match_every_tool(E) {
+    // a tool.call or tool.run hook that may match a tool turns off its move to the background, its live output and
+    // Code Mode's wait, even when it only passes the call on: every one this mod registers names its tool
+    const seen = []
+    ;(await import(new URL(file, import.meta.url).href + '?n=' + Math.random())).register((ev, m, fn) => seen.push({ ev, m: fn ? m : null }), {})
+    const open = seen.filter(h => (h.ev === 'tool.call' || h.ev === 'tool.run') && !(h.m && h.m.tool))
+    void E
+    return [`${seen.filter(h => h.ev === 'tool.call').length} tool.call hooks, ${open.length} without a tool`, open.length === 0]
+  },
+  async repeated_session_start_keeps_one_second_clock(E) {
+    // a session.start that comes again in the same module replaces the one-second clock instead of adding another
+    const before = E.clocks(1000)
+    await E.sessionStart()
+    await E.sessionStart()
+    return [`${before} clock after the first start, ${E.clocks(1000)} after two more`, before === 1 && E.clocks(1000) === 1]
   },
   async live_speed_learns_a_character_by_time(E) {
     // a short tool call pays ~120 tokens no character shows, written before its first piece: what a character is worth

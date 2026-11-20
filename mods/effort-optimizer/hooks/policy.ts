@@ -18,13 +18,16 @@ export function asLevel(v: unknown): Level | '' {
   return (LEVELS as readonly string[]).includes(level) ? (level as Level) : ''
 }
 
+// Short replies that only steer ("yes, go", "option 2", "lgtm"): the judge's own rule answers "the level the
+// chat already runs at", so the call is saved. Short real tasks ("audit auth for CSRF") are still judged.
 const ACK_WORDS = 'y|yes|yep|yeah|n|no|nope|ok|okay|k|sure|go|on|ahead|do|it|continue|proceed|please|thanks|thank|you|thx|lgtm|looks|good|option|\\d+'
 const ACK = new RegExp(`^(?:(?:${ACK_WORDS})\\b\\W*)+$`, 'i')
+export const MIN_JUDGE_CHARS = 12
 
-// Prompts that never need a new effort level: commands, shell and memory shortcuts, and short acknowledgements.
+// Prompts that never need a new effort level: commands, shell and memory shortcuts, acknowledgements and tiny replies.
 export function isJudgeable(text: string): boolean {
   const t = text.trim()
-  if (t.length < 4) return false
+  if (t.length < MIN_JUDGE_CHARS) return false
   if (t.startsWith('/') || t.startsWith('!') || t.startsWith('#')) return false
   return t.length > 30 || !ACK.test(t)
 }
@@ -72,12 +75,12 @@ The chat runs at: ${now || 'unknown'}
 
 Claude's last reply (first 600 characters, for context):
 <reply>
-${lastReply.slice(0, 600) || '(none, this is the first prompt)'}
+${lastReply.slice(0, 600).replace(/<\/reply>/gi, '</ reply>') || '(none, this is the first prompt)'}
 </reply>
 
 The new prompt:
 <prompt>
-${text.slice(0, 4000)}
+${text.slice(0, 4000).replace(/<\/prompt>/gi, '</ prompt>')}
 </prompt>
 
 Reply with JSON only: {"level": "low|medium|high|xhigh|max", "confidence": a number from 0 to 1 for how sure you are}`

@@ -1,7 +1,7 @@
 // prompt-drafts: keep prompts aside as drafts of this session and bring them back later.
 //   Save:  end a prompt with ";;" and press Enter: it is saved, not sent. Or "/draft <text>".
 //   Use:   "/drafts". On a wide terminal, a sidebar (click a draft, × deletes, Save prompt box) and a row of
-//          numbered buttons above the prompt box: a bare digit in an empty prompt box presses one, 0 closes.
+//          lettered buttons above the prompt box: a letter (a, b, ...) presses one while the row has the focus (ctrl+x tab), x closes.
 //          On a narrow one, Claude Code's own question dialog, a page at a time.
 //          "/drafts <n>" puts draft n in the prompt box, "/drafts rm <n>" deletes it, "/drafts undo" brings it back.
 // Each session has its own drafts (resuming the session brings them back); other sessions never see them.
@@ -14,6 +14,9 @@ import { add, ago, askPage, KEEP_MS, listText, MARKER, marked, preview, restore,
 
 const PANE = 'prompt-drafts'
 const SHOWN = 9
+// Letters, not digits: a bare digit in an empty prompt box is also what next-steps' buttons answer, and two plugins on one
+// hotkey press neither. A letter presses while this band holds the focus (ctrl+x tab, or a click).
+const KEYS = 'abcdefghi'
 // Below this many columns there is no room for the sidebar: drafts are picked in Claude Code's own question dialog.
 const WIDE = 110
 const drafts = atom({ plugin: 'prompt-drafts', key: 'drafts' } as const, [])
@@ -85,7 +88,7 @@ async function use($: EngineInterface, d: Draft) {
   return done.isFilled
 }
 
-// Picking puts the draft in the prompt box and closes both the sidebar and the number row.
+// Picking puts the draft in the prompt box and closes both the sidebar and the letter row.
 async function pick($: EngineInterface, d: Draft) {
   await closePicker($)
   await use($, d)
@@ -129,7 +132,7 @@ async function askPick($: EngineInterface, list: Draft[]) {
   }
 }
 
-// The sidebar shows when it has room; the number row above the prompt is what the keys reach either way.
+// The sidebar shows when it has room; the letter row above the prompt is what the keys reach either way.
 async function paneShown($: EngineInterface) {
   return (await $.ui.panes()).some(p => p.id === PANE && p.isPlaced && p.isShown)
 }
@@ -143,7 +146,7 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'draft', description: t.cmdDraft, argumentHint: '<text>' })
     await $.command.register({ name: 'drafts', description: t.cmdDrafts, argumentHint: '[n | rm n | undo]' })
     await load($)
-    void tidy($)
+    void tidy($).catch(error => $.ui.log(`prompt-drafts: tidy failed: ${String(error)}`, { to: 'debug' }))
     return next(e)
   })
 
@@ -200,15 +203,15 @@ export const register: Register = (on, options) => {
     return { text: t.usage }
   })
 
-  // Closing the sidebar (its ×, or Escape) closes the number row too.
+  // Closing the sidebar (its ×, or Escape) closes the letter row too.
   on('ui.close', { id: PANE }, async ($, e, next) => {
     await update($, isPicking, () => false)
     await update($, deleted, () => null)
     return next(e)
   })
 
-  // Above the prompt: a bare digit in an empty prompt box presses one of these buttons. With the sidebar shown it is
-  // one row of numbers; without it it is the whole list.
+  // Above the prompt: a letter, with this row focused, presses one of these buttons. With the sidebar shown it is
+  // one row of letters; without it it is the whole list.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || !(await read($, isPicking))) return next(e)
     const list = (await read($, drafts)).slice(0, SHOWN)
@@ -220,9 +223,9 @@ export const register: Register = (on, options) => {
           <Text bold>{t.picker}</Text>
           <Text dimColor>  {t.keysHint}  </Text>
           {list.map((d, i) => (
-            <Button key={`use-${d.id}`} label={`${d.title.slice(0, 12)}${d.title.length > 12 ? '…' : ''}  `} hotkey={String(i + 1)} plain onPress={() => pick($, d)} />
+            <Button key={`use-${d.id}`} label={`${d.title.slice(0, 12)}${d.title.length > 12 ? '…' : ''}  `} hotkey={KEYS[i]} plain onPress={() => pick($, d)} />
           ))}
-          <Button key="close" label={t.close} hotkey="0" plain onPress={() => closePicker($)} />
+          <Button key="close" label={t.close} hotkey="x" plain onPress={() => closePicker($)} />
         </Box>
       )
     }
@@ -235,11 +238,11 @@ export const register: Register = (on, options) => {
         </Box>
         {list.map((d, i) => (
           <Box key={d.id}>
-            <Button key={`use-${d.id}`} label={d.title} hotkey={String(i + 1)} plain onPress={() => pick($, d)} />
+            <Button key={`use-${d.id}`} label={d.title} hotkey={KEYS[i]} plain onPress={() => pick($, d)} />
             <Text dimColor>   {t.meta(ago(now, d.savedAt, lang), d.text.length)}</Text>
           </Box>
         ))}
-        <Button key="close" label={t.close} hotkey="0" plain onPress={() => closePicker($)} />
+        <Button key="close" label={t.close} hotkey="x" plain onPress={() => closePicker($)} />
       </Box>
     )
   })
@@ -274,7 +277,7 @@ export const register: Register = (on, options) => {
         {shown.map(({ d, i, more }) => (
           <Box flexDirection="column" key={d.id}>
             <Button key={`pane-${d.id}`} label={`${i + 1}  ${d.title}`} plain onPress={() => pick($, d)} />
-            {more.map(line => <Text dimColor>   {line}</Text>)}
+            {more.map((line, n) => <Text key={`${d.id}-${n}`} dimColor>   {line}</Text>)}
             <Box>
               <Text dimColor>   {t.meta(ago(now, d.savedAt, lang), d.text.length)}  </Text>
               <Button key={`rm-${d.id}`} label="×" plain onPress={() => remove($, d)} />

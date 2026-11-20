@@ -35,7 +35,9 @@ The tiers default to the aliases `haiku`, `sonnet` and `opus`, which Claude Code
 
 At session start it reads `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL` and builds a map from each id to its tier. A model is ranked by, in order, the configured tier strings, that map, then the family words `haiku`, `sonnet` and `opus`. An id none of these knows is unknown, and unknown takes the strict bar. If one profile backs two tiers, its id names no tier and ranks as unknown.
 
-`CLAUDE_CODE_SUBAGENT_MODEL` is different: Claude Code applies it over any hook, so while it is set this mod cannot change a subagent's model. `/model-router` says so when it sees the variable.
+`CLAUDE_CODE_SUBAGENT_MODEL` is different: Claude Code applies it over any hook, so while it is set this mod cannot change a subagent's model. While it is set, the mod skips the judge call (no Haiku call is spent) and `/model-router` shows each spawn as `skipped (forced by CLAUDE_CODE_SUBAGENT_MODEL)`.
+
+Known limitation: the spawn event carries the model the Agent call named and the parent's model, but not the model an agent type's own definition sets. A subagent type whose definition pins a model is therefore compared against the parent's model, and the router can override that choice when the judge is confident enough. Name a model on the call, or turn the mod off, for agent types you want left alone.
 
 ## Command
 
@@ -55,14 +57,14 @@ At session start it reads `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SO
 
 ## Logging and privacy
 
-Decisions are appended to `~/.claude/mods-logs/model-router.log` (the last 400 lines are kept). A line holds the agent type, the models and the reason. Prompts and task text are never logged.
+Decisions are appended to `~/.claude/mods-logs/model-router.log` (one append per line; the file moves to `model-router.log.1` at session start once it passes 256 KB). A line holds the agent type, the models and the reason. Prompts and task text are never logged.
 
 ## Hooks and calls
 
 - `session.start` registers `/model-router` and reads the five environment variables.
 - `agent.spawn` runs the judge and rewrites `model`.
 - `command.run` answers `/model-router`.
-- Calls: `$.model.complete` (alias `haiku`, effort `low`), `$.env.get`, `$.fs` for the log, `$.state` for the picks.
+- Calls: `$.model.complete` (alias `haiku`, effort `low`), `$.env.get`, `$.process` (one `/bin/sh` append per log line) and `$.fs.stat` for the log, `$.state` for the picks.
 
 ## Install
 

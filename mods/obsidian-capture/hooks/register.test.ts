@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 
-import { register, slugify, parseFrontmatter, inlineFields, fallbackSummary, firstHeading, entryLine, planTitle, planSlug, withStatus, mergeTags, upsertEntry, planSection, replacePlanSection, loggedInLink, implementationPromptPath, linkImplementationPrompt, implementationPromptNote } from './register'
+import { register, sanitizeTag, sanitizeTags, slugify, parseFrontmatter, inlineFields, fallbackSummary, firstHeading, entryLine, planTitle, planSlug, withStatus, mergeTags, upsertEntry, planSection, replacePlanSection, loggedInLink, implementationPromptPath, linkImplementationPrompt, implementationPromptNote } from './register'
 
 test('slugify matches the shell script: ampersand, punctuation, 80 char cap', () => {
   expect(slugify('Hooks & Mods: A Review!')).toBe('hooks-and-mods-a-review')
@@ -110,6 +110,7 @@ function captureHost() {
     ['/test/Library/Application Support/obsidian/obsidian.json', JSON.stringify({ vaults: { test: { path: '/vault', open: true } } })],
   ])
   const handlers = new Map<string, any>()
+  const listing: Array<{ name: string; kind: string; mtimeMs: number }> = []
   const on: any = (event: string, options: any, handler?: any) => {
     handlers.set(event === 'tool.call' ? options.tool : event, handler ?? options)
     return { catch() {} }
@@ -120,16 +121,14 @@ function captureHost() {
       read: async (path: string) => { if (!files.has(path)) throw new Error('missing'); return files.get(path) },
       write: async (path: string, text: string) => { files.set(path, text) },
       stat: async () => ({ mtimeMs: 1 }),
+      list: async () => listing,
     },
+    env: { get: async (name: string) => (name === 'HOME' ? '/test' : undefined) },
     process: { run: async (args: string[]) => {
-      if (args[0] === 'printenv') return { stdout: '/test\n', exitCode: 0 }
       if (args[0] === 'date') return { stdout: '2026 10 28\n', exitCode: 0 }
       if (args[0] === 'grep') {
         const hits = [...files].filter(([path, text]) => path.startsWith(`${args[5]}/`) && text.split('\n').includes(args[4]!)).map(([path]) => path)
         return { stdout: hits.join('\n'), exitCode: hits.length ? 0 : 1 }
-      }
-      if (args[0] === 'obsidian' && args[2] === 'create') {
-        files.set(`/vault/${args[3]!.slice('path='.length)}.md`, args[4]!.slice('content='.length).replace(/\\n/g, '\n'))
       }
       return { stdout: '', exitCode: 0 }
     } },
@@ -140,7 +139,7 @@ function captureHost() {
   const next: any = async () => ({})
   next.signal = new AbortController().signal
   const drain = () => handlers.get('session.end')($, {}, next)
-  return { files, handlers, $, next, drain }
+  return { files, handlers, listing, $, next, drain }
 }
 
 test('Plan Mode creates linked prompt even when rejected and recapture preserves edits', async () => {
@@ -157,6 +156,7 @@ test('Plan Mode creates linked prompt even when rejected and recapture preserves
   expect(host.files.get(prompt)).toContain(`source_file: ${source}`)
   host.files.set(prompt, `${host.files.get(prompt)}\nMy custom instruction.\n`)
   host.files.set(source, '# Fix deploy\n\nUpdated deployment instructions.')
+  await host.handlers.get('Write')(host.$, { file_path: source }, host.next)
   await host.handlers.get('ExitPlanMode')(host.$, {}, host.next)
   await host.drain()
   expect(host.files.get(prompt)).toContain('My custom instruction.')
@@ -178,4 +178,75 @@ test('Superpowers plans create linked implementation prompts while specs do not'
   expect(spec).not.toContain('## Implementation Prompt')
   expect(host.files.get('/vault/Projects/Engineering/Prompts/implement-plan-10-28-2026-feature.md')).toContain('source_file: /project/docs/superpowers/plans/2026-10-28-feature.md')
   expect([...host.files.keys()].filter(path => path.includes('/Prompts/')).length).toBe(1)
+})
+
+test('sanitizeTag keeps a safe kebab-case alphabet so model or frontmatter tags cannot break the YAML', () => {
+  expect(sanitizeTag('#My Tag: x')).toBe('my-tag-x')
+  expect(sanitizeTag('a\n  - injected: true')).toBe('a-injected-true')
+  expect(sanitizeTags(['ok', 'OK', '---', ''])).toEqual(['ok'])
+})
+
+test('a report with a hostile tag line is written with sanitised tags', async () => {
+  const host = captureHost()
+  const file = '/test/.claude/reports/r.md'
+  const content = '---\ntitle: Tagged\ntags: good, bad: [x]\n---\nBody text for the report.'
+  await host.handlers.get('Write')(host.$, { file_path: file, content }, host.next)
+  await host.drain()
+  const note = host.files.get('/vault/Projects/Engineering/Research/10-28-2026-tagged.md')!
+  expect(note).toContain('  - good\n  - bad-x\n')
+  expect(note).not.toContain('[x]')
+})
+
+test('a different report with the same title on the same day gets a suffix and keeps the first', async () => {
+  const host = captureHost()
+  for (const [file, body] of [['/test/.claude/reports/a.md', 'first body'], ['/test/.claude/reports/b.md', 'second body']]) {
+    await host.handlers.get('Write')(host.$, { file_path: file, content: `# Same Title\n\n${body}` }, host.next)
+    await host.drain()
+  }
+  expect(host.files.get('/vault/Projects/Engineering/Research/10-28-2026-same-title.md')).toContain('first body')
+  expect(host.files.get('/vault/Projects/Engineering/Research/10-28-2026-same-title-2.md')).toContain('second body')
+})
+
+test('rewriting the same report updates its note instead of adding a copy', async () => {
+  const host = captureHost()
+  for (const body of ['first draft', 'final draft']) {
+    await host.handlers.get('Write')(host.$, { file_path: '/test/.claude/reports/r.md', content: `# Same Title\n\n${body}` }, host.next)
+    await host.drain()
+  }
+  expect(host.files.get('/vault/Projects/Engineering/Research/10-28-2026-same-title.md')).toContain('final draft')
+  expect(host.files.has('/vault/Projects/Engineering/Research/10-28-2026-same-title-2.md')).toBe(false)
+})
+
+test('ExitPlanMode does not reuse a plan file from an earlier approval', async () => {
+  const host = captureHost()
+  const first = '/test/.claude/plans/a.md'
+  const second = '/test/.claude/plans/b.md'
+  host.files.set(first, '# Plan A\n\nDo the first thing.')
+  host.files.set(second, '# Plan B\n\nDo the second thing.')
+  await host.handlers.get('Write')(host.$, { file_path: first }, host.next)
+  await host.handlers.get('ExitPlanMode')(host.$, {}, host.next)
+  await host.drain()
+  host.listing.push({ name: 'b.md', kind: 'file', mtimeMs: 9 })
+  await host.handlers.get('ExitPlanMode')(host.$, {}, host.next)
+  await host.drain()
+  expect(host.files.get('/vault/Projects/Engineering/Plans/10-28-2026-plan-b.md')).toContain('Do the second thing.')
+})
+
+test('a Superpowers path with a slash in the slug is not captured', async () => {
+  const host = captureHost()
+  const file = '/project/docs/superpowers/plans/2026-10-28-x/../../evil.md'
+  await host.handlers.get('Write')(host.$, { file_path: file, content: '# Evil\n\nShould never be written.' }, host.next)
+  await host.drain()
+  expect([...host.files.keys()].filter(path => path.startsWith('/vault/Projects'))).toEqual([])
+})
+
+test('a Superpowers capture writes the note and journal itself with quoted metadata and merged tags', async () => {
+  const host = captureHost()
+  const source = '/project/docs/superpowers/specs/2026-10-28-feature.md'
+  await host.handlers.get('Write')(host.$, { file_path: source, content: '# Feature\n\n**Ticket:** say "hi"\n\nBuild the feature.' }, host.next)
+  await host.drain()
+  expect(host.files.get('/vault/Projects/Engineering/Specs/10-28-2026-feature.md')).toContain('ticket: "say \\"hi\\""')
+  const journal = host.files.get('/vault/Journal/2026/10-October/10-28-2026.md')!
+  expect(journal).toContain('- [[Projects/Engineering/Specs/10-28-2026-feature|Feature]] (spec)')
+  expect(journal).toContain('  - deploy')
 })

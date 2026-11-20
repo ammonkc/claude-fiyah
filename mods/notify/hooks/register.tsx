@@ -83,11 +83,11 @@ async function osNotify($: EngineInterface, title: string, body: string) {
       void $.process.run(['powershell', '-NoProfile', '-WindowStyle', 'Hidden', '-Command', script])
       return
     }
-    const uname = await $.process.run(['uname'])
-    if (uname.stdout.trim() === 'Darwin') {
+    isDarwin ??= (await $.process.run(['uname'])).stdout.trim() === 'Darwin'
+    if (isDarwin) {
       await $.process.run(['osascript', '-e', `display notification "${safe(body)}" with title "${safe(title)}" sound name "Glass"`])
     } else {
-      await $.process.run(['notify-send', safe(title), safe(body)])
+      await $.process.run(['notify-send', '--', safe(title), safe(body)])
     }
   } catch (error) {
     $.ui.log(`notify: native notification failed: ${String(error)}`, { to: 'debug' })
@@ -95,8 +95,10 @@ async function osNotify($: EngineInterface, title: string, body: string) {
 }
 
 let useOs = true
-// In auto mode a tool call that comes back 'ask' goes to the classifier, not to you, so there is no approval to wait on.
-let isAutoMode = false
+// `uname` is asked once; the platform does not change under a session.
+let isDarwin: boolean | undefined
+// In auto mode a permission request goes to the classifier, not to you, so there is no approval to wait on.
+const isAutoMode = atom({ plugin: 'notify', key: 'isAutoMode' } as const, false)
 
 /** Records a notification in the inbox, toasts it, and (when `native`) raises an OS notification. */
 async function push($: EngineInterface, kind: NotifyKind, title: string, body: string, native: boolean) {
@@ -111,7 +113,27 @@ export const register: Register = (on, options) => {
   const minSeconds = Number(options.minSeconds ?? 30)
   useOs = options.osNotify !== false
   const approvalWaitSeconds = Number(options.approvalWaitSeconds ?? 15)
+  // Approval pings waiting out their grace period, keyed by agent and tool.
   const pendingApprovals = new Map<string, () => void>()
+  // The permission event carries no call id, so a call is told apart by its agent, tool and input:
+  // a parallel call of the same tool with other input no longer cancels this one's ping.
+  const approvalKey = (agentId: string | undefined, tool: string, input: unknown) => {
+    let shown = ''
+    try {
+      shown = JSON.stringify(input) ?? ''
+    } catch {
+      // An input that can't be shown keys by agent and tool alone.
+    }
+    return `${agentId ?? ''}:${tool}:${shown}`
+  }
+  const settle = (key?: string) => {
+    for (const [k, cancel] of [...pendingApprovals]) {
+      if (key === undefined || k === key) {
+        cancel()
+        pendingApprovals.delete(k)
+      }
+    }
+  }
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'notifications', description: 'Open the notification inbox' })
@@ -136,6 +158,7 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    if (e.agentId === undefined) settle()
 
     if (e.agentId !== undefined) {
       const agent = (await $.agent.list()).find(a => a.id === e.agentId)
@@ -156,8 +179,8 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.attachment', async ($, e, next) => {
-    if (e.type === 'auto_mode') isAutoMode = true
-    else if (e.type === 'auto_mode_exit') isAutoMode = false
+    if (e.type === 'auto_mode') await update($, isAutoMode, () => true)
+    else if (e.type === 'auto_mode_exit') await update($, isAutoMode, () => false)
 
     return next(e)
   })
@@ -172,36 +195,45 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('tool.call', async ($, e, next) => {
-    if (e.tool === 'AskUserQuestion') {
-      // Only when Claude asks. A plugin's $.ui.ask (prompt-coach's suggestion) also arrives here,
-      // raised by that plugin while you are right at the prompt.
-      if (e.agentId === undefined && next.origin.plugin === 'engine') await push($, 'question', 'Claude has a question for you', '', true)
-      return next(e)
-    }
+  // Only when Claude asks. A plugin's $.ui.ask (prompt-coach's suggestion) also arrives here,
+  // raised by that plugin while you are right at the prompt.
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    if (e.agentId === undefined && next.origin.plugin === 'engine') await push($, 'question', 'Claude has a question for you', '', true)
 
-    // Find out whether this call will stop for your approval; if it sits there, ping you.
-    const { tool, tool_use_id, agentId, ...input } = e as unknown as { tool: string; tool_use_id: string; agentId?: string } & Record<string, unknown>
-    let check: { decision: string } = { decision: 'allow' }
-    try {
-      check = await $.tool.check({ tool, input })
-    } catch {
-      // no verdict available; treat as allow
-    }
+    return next(e)
+  })
 
-    if (check.decision === 'ask' && !isAutoMode && approvalWaitSeconds >= 0) {
+  // The permission dialog is up: ping you if it sits unanswered. One classic hook, so no tool call
+  // is held back and none loses its backgrounding.
+  on('classic.PermissionRequest', async ($, e, next) => {
+    if (approvalWaitSeconds >= 0 && !(await read($, isAutoMode))) {
+      const key = approvalKey(e.agent_id, e.tool_name, e.tool_input)
+      settle(key)
       const timer = $.clock.after(approvalWaitSeconds * 1000, () => {
-        void push($, 'approval', `Waiting for your approval${agentId ? ' (subagent)' : ''}`, `${tool}`, true)
+        pendingApprovals.delete(key)
+        void push($, 'approval', `Waiting for your approval${e.agent_id ? ' (subagent)' : ''}`, e.tool_name, true)
       })
-      pendingApprovals.set(tool_use_id, () => timer.cancel())
+      pendingApprovals.set(key, () => timer.cancel())
     }
 
-    try {
-      return await next(e)
-    } finally {
-      pendingApprovals.get(tool_use_id)?.()
-      pendingApprovals.delete(tool_use_id)
-    }
+    return next(e)
+  })
+
+  // The call ran (or failed, or was refused): the dialog is gone.
+  on('classic.PostToolUse', async ($, e, next) => {
+    settle(approvalKey(e.agent_id, e.tool_name, e.tool_input))
+
+    return next(e)
+  })
+  on('classic.PostToolUseFailure', async ($, e, next) => {
+    settle(approvalKey(e.agent_id, e.tool_name, e.tool_input))
+
+    return next(e)
+  })
+  on('classic.PermissionDenied', async ($, e, next) => {
+    settle(approvalKey(e.agent_id, e.tool_name, e.tool_input))
+
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

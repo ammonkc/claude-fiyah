@@ -1,6 +1,6 @@
 {
   "name": "input-router",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Large MCP results that read as documents (pages, issues, threads) get a heading outline beside them, so Claude's first search lands on a real section. The result itself is never changed, so context-mode still indexes it whole. Opt-in Haiku synthesis per tool. Long PDFs are read by Haiku. /input-router [on|off|status].",
   "author": {
     "name": "ammonkc"
@@ -44,6 +44,12 @@
       "title": "Most Haiku chunks",
       "description": "PDF text is read by Haiku in chunks of about 100,000 characters in parallel. Text past the last chunk is not read, and the notes say how much.",
       "default": 6
+    },
+    "keepDays": {
+      "type": "number",
+      "title": "Keep PDF text (days)",
+      "description": "Extracted PDF text is kept this many days (at least 1) under ~/.claude/mods-logs/input-router/text/ and removed at session start.",
+      "default": 7
     }
   }
 }

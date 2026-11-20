@@ -1,6 +1,6 @@
 {
   "name": "handoff-nudge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A band above the prompt that suggests a handoff when the context window passes a threshold. One press has the model write a short focus line and fills /handoff with it; once the handoff mod has saved the note, the band offers /clear and points at /handoff resume.",
   "author": { "name": "ammonkc" },
   "repository": "https://github.com/ammonkc/claude-fiyah",

@@ -21,6 +21,8 @@ type View =
   | { kind: 'offer'; items: Suggestion[] }
 
 const MAX_SUGGESTIONS = 3
+// The fork has no abort of its own; past this the answer is dropped and the loading line cleared.
+const FORK_TIMEOUT_MS = 30_000
 const LABEL_MAX = 48
 const PROMPT_MAX = 600
 const SKILL_NAME_MAX = 64
@@ -160,6 +162,8 @@ export const register: Register = (on, options) => {
   // Turn over: ask the fork, detached, so the turn's completion never waits on it.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    // A subagent's turn is not the conversation's: no suggestions, no loading line.
+    if (e.agentId !== undefined) return result
     if (e.reason !== 'answer' || e.answer.trim().length < minTurnChars) return result
     const turnId = e.turnId
     show($, { kind: 'loading', turnId })
@@ -170,10 +174,17 @@ export const register: Register = (on, options) => {
         const commands = await $.command.list().catch(() => null)
         const known = commands === null ? null : new Set(commands.map(command => command.name))
         const skills = suggestsSkills && commands !== null ? skillList(commands) : ''
-        const reply = await $.model.fork({ prompt: forkPrompt(skills) })
-        items = reply.isAnswered ? parseSuggestions(reply.text, known) : []
+        let timer: { cancel: () => void } | undefined
+        const timedOut = new Promise<null>(resolve => {
+          timer = $.clock.after(FORK_TIMEOUT_MS, () => resolve(null))
+        })
+        // 'low' effort: a side job. Where the model takes effort per message this costs nothing extra;
+        // otherwise the first fork at a level other than the session's writes the conversation to the cache once.
+        const reply = await Promise.race([$.model.fork({ prompt: forkPrompt(skills), effort: 'low' }), timedOut]).finally(() => timer?.cancel())
+        if (reply === null) $.ui.log('next-steps: fork timed out', { to: 'debug' })
+        else if (reply.isAnswered) items = parseSuggestions(reply.text, known)
       } catch (error) {
-        $.ui.log(`fork failed: ${String(error)}`)
+        $.ui.log(`next-steps: fork failed: ${String(error)}`, { to: 'debug' })
       }
       // A newer turn started (or another completed) while we waited: drop ours.
       if (view.kind !== 'loading' || view.turnId !== turnId) return

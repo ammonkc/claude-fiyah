@@ -191,21 +191,23 @@ export const SVG_COLORS = { running: '#3b82f6', done: '#16a34a', failed: '#dc262
 
 // ---------------------------------------------------------------- formatting
 
-/** `claude-opus-5-5` → `Opus 5.5`; anything else is shown as given. */
 /**
  * A model id as people say it, from any provider's spelling: `claude-opus-5-5[1m]` → `Opus 5.5 1M`,
  * `us.anthropic.claude-sonnet-4-5-20250929-v1:0` → `Sonnet 4.5`, `claude-3-5-haiku-20241022` →
- * `Haiku 3.5`. Anything else is shown as given, cut to 22 characters.
+ * `Haiku 3.5`. An id in `aliases` (Bedrock's inference-profile ARNs, from ANTHROPIC_DEFAULT_*_MODEL) is
+ * its family name; any other ARN is shown by its last segment. Anything else is shown as given, cut to 22 characters.
  */
-export const prettyModel = (id: string) => {
+export const prettyModel = (id: string, aliases: Readonly<Record<string, string>> = {}) => {
   if (!id) return '—'
+  const exact = aliases[id] ?? aliases[id.replace(/\[1m\]$/i, '')]
+  if (exact) return `${exact}${/\[1m\]|-1m\b/i.test(id) ? ' 1M' : ''}`
   const cap = (f: string) => f.charAt(0).toUpperCase() + f.slice(1)
   const big = /\[1m\]|-1m\b/i.test(id) ? ' 1M' : ''
   const now = /claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(?![\d])/i.exec(id)
   if (now?.[1] && !/^\d/.test(now[1])) return `${cap(now[1].toLowerCase())} ${now[2]}${now[3] ? `.${now[3]}` : ''}${big}`
   const old = /claude-(\d+)(?:-(\d))?-([a-z]+)/i.exec(id)
   if (old?.[3]) return `${cap(old[3].toLowerCase())} ${old[1]}${old[2] ? `.${old[2]}` : ''}${big}`
-  return shorten(id, 22)
+  return shorten(id.startsWith('arn:') ? (id.split('/').pop() ?? id) : id, 22)
 }
 
 export const shorten = (s: string, n: number) => {
@@ -391,6 +393,21 @@ export const settleCheck = (g: Gate, id: string, didRun: boolean): Gate => {
     recent: g.recent.map(r => (r === c ? { ...r, verdict } : r)),
     totals: { ...g.totals, [c.bucket]: { ...t, ask: Math.max(0, t.ask - 1), [verdict]: t[verdict] + 1 } },
   }
+}
+
+/**
+ * The ids of calls a person or a rule refused, from a tool-result row's blocks: an error result worded as
+ * a refusal. No event fires for a person's own refusal, so the row that records it is the signal.
+ */
+export const refusedIds = (content: unknown): string[] => {
+  if (!Array.isArray(content)) return []
+  const out: string[] = []
+  for (const b of content) {
+    if (!isObject(b) || b.type !== 'tool_result' || b.is_error !== true || typeof b.tool_use_id !== 'string') continue
+    const text = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map(x => (isObject(x) && typeof x.text === 'string' ? x.text : '')).join(' ') : ''
+    if (/doesn't want to proceed|tool use was rejected|permission to use .{1,80} (has been )?denied|user (rejected|denied|declined)/i.test(text)) out.push(b.tool_use_id)
+  }
+  return out
 }
 
 export const gateSummary = (g: Gate) => {

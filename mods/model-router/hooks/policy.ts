@@ -80,10 +80,11 @@ export const JUDGE_SYSTEM = [
 /** The judge's user turn: the task cut to MAX_TASK_CHARS, inside tags it cannot close early. */
 export function judgePrompt(task: { prompt: string; description?: string; agentType?: string }): string {
   const cut = task.prompt.length > MAX_TASK_CHARS
-  const body = (cut ? task.prompt.slice(0, MAX_TASK_CHARS) : task.prompt).replace(/<\/task>/gi, '</ task>')
+  const escape = (text: string) => text.replace(/<\/task>/gi, '</ task>')
+  const body = escape(cut ? task.prompt.slice(0, MAX_TASK_CHARS) : task.prompt)
   return [
-    task.agentType ? `Subagent type: ${task.agentType}` : '',
-    task.description ? `Short description: ${task.description}` : '',
+    task.agentType ? `Subagent type: ${escape(task.agentType)}` : '',
+    task.description ? `Short description: ${escape(task.description)}` : '',
     `<task>\n${body}${cut ? `\n[cut: ${task.prompt.length - MAX_TASK_CHARS} more characters]` : ''}\n</task>`,
   ]
     .filter(Boolean)

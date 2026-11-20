@@ -16,6 +16,10 @@ node look.mjs             # writes look.html: the bars as the desktop draws them
 
 Another build: compile it anywhere with `stub.mjs` next to it, then `node regress.mjs file:///abs/build.mjs` (`ONLY=case1,case2` runs only those cases) and `node scenarios.mjs file:///abs/build.mjs [SKILL.md] [case prefix]`, which writes `build.results.json` next to the build.
 
+## With the plugin test runner
+
+`stop.test.ts` runs the real module through `claude plugin test mods/plan-progress` (the Stop cap of once per turn). The `.mjs` files above are not found by it.
+
 ## Live demo (in a Claude Code session, after the mod has reloaded)
 
 Ask Claude: "run the plan-progress live demo from tests/README.md". The steps are fixed, so every run looks the same.

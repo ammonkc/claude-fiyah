@@ -1,7 +1,10 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  STATUS_ARGS,
   buildDiffContext,
+  commitGroups,
+  excludeSpec,
   isSecretPath,
   openSteps,
   parseGroups,
@@ -26,6 +29,69 @@ test('isSecretPath flags env and key files but not examples', () => {
   expect(isSecretPath('certs/server.pem')).toBe(true)
   expect(isSecretPath('.env.example')).toBe(false)
   expect(isSecretPath('src/environment.ts')).toBe(false)
+})
+
+test('isSecretPath flags secrets files but not source files that mention the word', () => {
+  expect(isSecretPath('config/secrets.json')).toBe(true)
+  expect(isSecretPath('client_secret.json')).toBe(true)
+  expect(isSecretPath('deploy/secrets.yaml')).toBe(true)
+  expect(isSecretPath('.secret')).toBe(true)
+  expect(isSecretPath('src/secrets.ts')).toBe(false)
+  expect(isSecretPath('src/secret-manager.ts')).toBe(false)
+  expect(isSecretPath('client_secret_123.apps.googleusercontent.com.json')).toBe(true)
+  expect(isSecretPath('my-secret-token.txt')).toBe(true)
+  expect(isSecretPath('secrets.local.json')).toBe(true)
+  expect(isSecretPath('app.secret.local')).toBe(true)
+})
+
+test('a new directory is listed file by file, so a secret inside it is filtered and only a.ts is staged', async () => {
+  expect(STATUS_ARGS).toContain('-uall')
+
+  const entries = parsePorcelain('?? newdir/.env\0?? newdir/a.ts\0')
+  const changed = entries.filter(e => !isSecretPath(e.path)).map(e => e.path)
+  const groups = parseGroups('"feat(new): add a"', changed)!
+  const calls: string[][] = []
+  const run = async (args: string[]) => {
+    calls.push(args)
+
+    return { exitCode: 0, stdout: 'abc1234\n', stderr: '' }
+  }
+
+  await commitGroups(run, groups, entries)
+
+  expect(calls.find(c => c[1] === 'add')).toEqual(['--literal-pathspecs', 'add', '--', 'newdir/a.ts'])
+  expect(calls.find(c => c[1] === 'commit')?.slice(-2)).toEqual(['--', 'newdir/a.ts'])
+
+  // Even a group that lists the secret file never stages it.
+  calls.length = 0
+  await commitGroups(run, [{ message: 'feat(new): add', files: ['newdir/.env', 'newdir/a.ts'] }], entries)
+  expect(calls.flat()).not.toContain('newdir/.env')
+})
+
+test('a commit rejected part way names the groups already committed', async () => {
+  const entries = parsePorcelain(' M a.ts\0 M b.ts\0')
+  let commits = 0
+  const run = async (args: string[]) => {
+    if (args[1] === 'commit' && ++commits === 2) return { exitCode: 1, stdout: '', stderr: 'hook rejected' }
+
+    return { exitCode: 0, stdout: 'abc1234\n', stderr: '' }
+  }
+  const groups = [
+    { message: 'feat(a): one', files: ['a.ts'] },
+    { message: 'feat(b): two', files: ['b.ts'] },
+  ]
+
+  await expect(commitGroups(run, groups, entries)).rejects.toThrow(/hook rejected[\s\S]*Already committed:\nabc1234 feat\(a\): one/)
+})
+
+test('excludeSpec drops secret paths from a diff and leaves it whole when there are none', () => {
+  expect(excludeSpec(['src/a.ts', 'config/.env', 'k.pem'])).toEqual([
+    '--',
+    '.',
+    ':(exclude,literal)config/.env',
+    ':(exclude,literal)k.pem',
+  ])
+  expect(excludeSpec(['src/a.ts'])).toEqual([])
 })
 
 test('parseGroups drops unknown and duplicate files and appends unassigned ones to the last group', () => {

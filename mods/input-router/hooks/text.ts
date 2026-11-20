@@ -83,12 +83,13 @@ export function notedPath(text: string): string | undefined {
 
 /**
  * Whether a resolved path is a file core saved: `<root>/<project>/<session>/tool-results/<file>`, under the
- * projects folder with every link followed. The path in a tool's own text is never trusted on its own.
+ * projects folder with every link followed, and `<session>` is the current session. The path in a tool's own
+ * text is never trusted on its own.
  */
-export function isCoreSaved(real: string, projectsRoot: string): boolean {
-  if (!projectsRoot.startsWith('/') || !real.startsWith(`${projectsRoot}/`)) return false
+export function isCoreSaved(real: string, projectsRoot: string, sessionId: string): boolean {
+  if (!sessionId || !projectsRoot.startsWith('/') || !real.startsWith(`${projectsRoot}/`)) return false
   const parts = real.slice(projectsRoot.length + 1).split('/')
-  return parts.length >= 4 && parts[2] === 'tool-results' && !parts.includes('..') && !parts.includes('')
+  return parts.length >= 4 && parts[1] === sessionId && parts[2] === 'tool-results' && !parts.includes('..') && !parts.includes('')
 }
 
 export function safeName(text: string): string {

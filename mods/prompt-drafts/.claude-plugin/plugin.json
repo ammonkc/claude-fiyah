@@ -1,6 +1,6 @@
 {
   "name": "prompt-drafts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Keep prompts aside as drafts of the session. End a prompt with ;; to save it instead of sending it, then /drafts to put one back in the prompt box.",
   "author": {
     "name": "Seongbeen Lee",

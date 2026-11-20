@@ -14,6 +14,8 @@ import {
   fmtTokens,
   hitRatio,
   isCachingDisabled,
+  modelFamily,
+  shortModel,
   missReason,
   remainingMs,
   resolveTtl,
@@ -55,6 +57,19 @@ describe('ttl and switches', () => {
 })
 
 describe('the countdown counts from the start of the request', () => {
+  test('a Bedrock ARN is a family when ANTHROPIC_DEFAULT_*_MODEL names it, and shows short', () => {
+    const arn = 'arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abcd1234efgh'
+    const env = { sonnetId: arn, opusId: 'arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/zzzz' }
+    expect(modelFamily(arn, env)).toBe('sonnet')
+    expect(modelFamily('claude-opus-5-5', {})).toBe('opus')
+    expect(modelFamily(arn, {})).toBeUndefined()
+    expect(isCachingDisabled(arn, { ...env, disableSonnet: '1' })).toBe(true)
+    expect(isCachingDisabled(arn, { ...env, disableOpus: '1' })).toBe(false)
+    expect(shortModel(arn, env)).toBe('sonnet')
+    expect(shortModel('arn:aws:bedrock:eu-west-1:1:application-inference-profile/other999', {})).toBe('other999')
+    expect(shortModel('claude-sonnet-5-5', env)).toBe('claude-sonnet-5-5')
+  })
+
   test('remaining time and expiry', () => {
     const s = sample()
     expect(remainingMs(s, '5m', T0 + 100_000)).toBe(200_000)
@@ -146,10 +161,13 @@ describe('per-turn rows', () => {
 })
 
 // The module end to end: a main-loop request feeds the band, a subagent's does not.
-type Calls = { status: (string | undefined)[]; logs: string[] }
+type Calls = { status: (string | undefined)[]; logs: string[]; usage?: number }
 
 function fakeEngine(on: On, env: Record<string, string>, calls: Calls, cache = { read: 80_000, write: 1_000 }, limits: { kind: string; percentUsed: number }[] = []) {
-  on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: limits } }) as never)
+  on('session.usage', () => {
+    if (calls.usage !== undefined) calls.usage++
+    return { value: { startedAt: 0, context: {}, rateLimits: limits } } as never
+  })
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('session.end', async () => ({ sessionId: 's1' }) as never)
   on('env.get', ($, e) => ({ value: env[e.name] }))
@@ -225,6 +243,17 @@ describe('the band', () => {
     expect(calls.status.filter(t => t?.includes('%'))).toEqual([])
     await step($)
     expect(calls.status.filter(t => t?.includes('%')).length).toBe(1)
+  })
+
+  test('once a response came with no plan windows, usage is not asked again on every step', async ($, on) => {
+    const calls: Calls = { status: [], logs: [], usage: 0 }
+    fakeEngine(on, {}, calls)
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+    const atStart = calls.usage
+    await step($, { index: 0 })
+    await step($, { index: 1 })
+    await step($, { index: 2 })
+    expect(calls.usage).toBe((atStart ?? 0) + 1)
   })
 
   test('ENABLE_PROMPT_CACHING_1H makes the lifetime an hour; the option beats the environment', async ($, on) => {

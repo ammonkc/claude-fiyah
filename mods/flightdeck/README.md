@@ -103,7 +103,9 @@ Flightdeck only watches. Every hook passes its event on unchanged: it never deni
 
 | It sees | Through |
 | --- | --- |
-| every tool call's name and input, and whether it failed | `tool.call` |
+| every finished tool call's name and input, and whether it failed (read from the classic `PostToolUse` and `PostToolUseFailure` events, so a tool keeps its move to the background and its live output) | `classic.PostToolUse`, `classic.PostToolUseFailure` |
+| a call the auto mode classifier refused | `classic.PermissionDenied` |
+| a call you refused at a permission prompt (no event fires for it, so the error row that records it is read, matched by its wording) | `session.append` |
 | every permission verdict | `tool.check` |
 | subagent spawns, their model requests and token usage, and their final answers | `agent.spawn`, `turn.step`, `turn.complete` |
 | your prompts' first 70 characters, for the log | `turn.start` |

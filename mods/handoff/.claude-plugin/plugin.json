@@ -1,6 +1,6 @@
 {
   "name": "handoff",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "/handoff writes a six section handoff note (goal, status, what changed, next steps, gotchas, how to verify) from the live session and git facts, saves it under ~/.claude/handoffs/<project>, copies it and shows it in a pane. /handoff resume fills the prompt with the newest note so a fresh session can continue from it.",
   "author": { "name": "ammonkc" },
   "repository": "https://github.com/ammonkc/claude-fiyah",

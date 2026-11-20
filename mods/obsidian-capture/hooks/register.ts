@@ -2,12 +2,18 @@ import type { Register } from 'claude-code'
 
 const REPORT = /\/\.claude\/reports\/[^/]+\.md$/
 const PLAN_FILE = /\/\.claude\/plans\/[^/]+\.md$/
-const SUPER = /\/docs\/superpowers\/(plans|specs)\/(\d{4})-(\d{2})-(\d{2})-(.+)\.md$/
+const SUPER = /\/docs\/superpowers\/(plans|specs)\/(\d{4})-(\d{2})-(\d{2})-([^/]+)\.md$/
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 
 export const slugify = (title: string): string =>
   title.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9\s-]/g, '').replace(/\s/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'unnamed-report'
+
+// Tags are written as bare YAML list items, so only a safe kebab-case alphabet is kept.
+export const sanitizeTag = (tag: string): string =>
+  tag.toLowerCase().replace(/^#+/, '').replace(/[^a-z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
+
+export const sanitizeTags = (tags: readonly string[]): string[] => [...new Set(tags.map(sanitizeTag).filter(Boolean))]
 
 export const parseFrontmatter = (text: string): { fm: Record<string, string>; body: string } => {
   const m = /^---\n([\s\S]*?)\n---\n([\s\S]*)/.exec(text)
@@ -163,8 +169,12 @@ const pending = new Set<Promise<unknown>>()
 let logChain: Promise<void> = Promise.resolve()
 
 async function getHome($: any): Promise<string> {
-  home ??= (await $.process.run(['printenv', 'HOME'])).stdout.trim()
-  return home as string
+  if (!home) {
+    const value: string | undefined = await $.env.get('HOME')
+    if (!value) throw new Error('HOME is not set')
+    home = value
+  }
+  return home
 }
 
 // Last 200 lines kept; writes are serialized so concurrent captures cannot clobber each other.
@@ -199,7 +209,7 @@ async function appendFile($: any, file: string, text: string): Promise<void> {
   if (r.exitCode !== 0) throw new Error(`append failed: ${file}`)
 }
 
-async function captureReport($: any, session: string, content: string) {
+async function captureReport($: any, session: string, sourceFile: string, content: string) {
   const vault = await findVault($)
   if (!vault) {
     log($, `report skipped: no usable vault${vaultOption ? ` named ${vaultOption}` : ''} in obsidian.json`)
@@ -209,15 +219,23 @@ async function captureReport($: any, session: string, content: string) {
   const { fm, body } = parseFrontmatter(content)
   const title = fm.title || firstHeading(body).replace(/^Unnamed$/, 'Unnamed Report')
   const summary = fm.summary || 'Research report captured from Claude Code.'
-  const tags = (fm.tags ?? '').split(',').map(t => t.trim()).filter(Boolean)
-  const allTags = ['research', 'claude-session', ...tags.filter(t => t !== 'research')]
+  const tags = sanitizeTags((fm.tags ?? '').split(',').map(t => t.trim()))
+  const allTags = ['research', 'claude-session', ...tags.filter(t => t !== 'research' && t !== 'claude-session')]
 
   const { yyyy, mm, dd } = await localDate($)
   const prefix = `${mm}-${dd}-${yyyy}`
-  const noteRel = `Projects/Engineering/Research/${prefix}-${slugify(title)}`
+  const baseRel = `Projects/Engineering/Research/${prefix}-${slugify(title)}`
+  // A rewrite of the same report updates its note. A different report with the same title on the
+  // same day gets a suffix instead of replacing the first. Notes are matched by their source_file.
+  let noteRel = baseRel
+  for (let n = 2; n < 100; n++) {
+    const prior: string | undefined = await $.fs.read(`${vault.path}/${noteRel}.md`).catch(() => undefined)
+    if (prior === undefined || prior.includes(`\nsource_file: ${sourceFile}\n`)) break
+    noteRel = `${baseRel}-${n}`
+  }
   const journalRel = `Journal/${yyyy}/${mm}-${MONTHS[Number(mm) - 1]}/${prefix}`
 
-  const note = `---\ncreated: ${mm}/${dd}/${yyyy}\ntags:\n${allTags.map(t => `  - ${t}\n`).join('')}source: Claude Code (Research)\nsession: ${session}\n---\n\n# ${title}\n\n## Logged In\n[[${journalRel}]]\n\n${body.trimStart()}`
+  const note = `---\ncreated: ${mm}/${dd}/${yyyy}\ntags:\n${allTags.map(t => `  - ${t}\n`).join('')}source: Claude Code (Research)\nsession: ${session}\nsource_file: ${sourceFile}\n---\n\n# ${title}\n\n## Logged In\n[[${journalRel}]]\n\n${body.trimStart()}`
   await $.fs.write(`${vault.path}/${noteRel}.md`, note)
 
   const jf = `${vault.path}/${journalRel}.md`
@@ -226,24 +244,26 @@ async function captureReport($: any, session: string, content: string) {
   log($, `report captured: ${noteRel}`)
 }
 
+const SUMMARY_MAX_CHARS = 20000
+
 async function summarize($: any, label: string, content: string, fallbackTag: string, emptySummary?: string): Promise<{ summary: string; tags: string }> {
   const r = await $.model.complete({
     model: 'haiku',
     maxTokens: 200,
     system: `You are a concise note-taking assistant. Given an ${label}, output exactly two lines:\nLine 1: A 1-2 sentence summary (max 200 chars). Be specific about what will be built or changed.\nLine 2: 1-2 lowercase kebab-case tags relevant to the topic (comma-separated, no # prefix).\nOutput ONLY these two lines.`,
-    prompt: `Summarise and tag this ${label}:\n\n${content}`,
+    prompt: `Summarise and tag this ${label}:\n\n${content.length > SUMMARY_MAX_CHARS ? `${content.slice(0, SUMMARY_MAX_CHARS)}\n[truncated]` : content}`,
   })
   const lines = r.isAnswered ? r.text.trim().split('\n') : []
   const first = (lines[0] ?? '').trim()
   const summary = (first && first.length <= 300 ? first : fallbackSummary(content, emptySummary)).replace(/\n/g, ' ')
-  const tags = (lines.length > 1 ? lines[lines.length - 1]!.trim() : '') || fallbackTag
+  const tags = sanitizeTags((lines.length > 1 ? lines[lines.length - 1]!.trim() : '').split(',')).join(',') || fallbackTag
   return { summary, tags }
 }
 
 type PlanInfo = { vaultPath: string; notePath: string; journalPath: string; title: string; summary: string; tags: string[]; isUpdate: boolean }
 
-async function resolvePlanFile($: any): Promise<string | undefined> {
-  if (lastPlanFile) return lastPlanFile
+async function resolvePlanFile($: any, known: string | undefined): Promise<string | undefined> {
+  if (known) return known
   const dir = `${await getHome($)}/.claude/plans`
   const entries: Array<{ name: string; kind: string; mtimeMs: number }> = await $.fs.list(dir).catch(() => [])
   const newest = entries.filter(x => x.kind === 'file' && x.name.endsWith('.md')).sort((a, b) => b.mtimeMs - a.mtimeMs)[0]
@@ -261,13 +281,13 @@ async function findExistingPlanNote($: any, vaultPath: string, planFile: string)
   return file.slice(vaultPath.length + 1).replace(/\.md$/, '')
 }
 
-async function capturePlan($: any, session: string): Promise<PlanInfo | undefined> {
+async function capturePlan($: any, session: string, known: string | undefined): Promise<PlanInfo | undefined> {
   const vault = await findVault($)
   if (!vault) {
     log($, `plan skipped: no usable vault${vaultOption ? ` named ${vaultOption}` : ''} in obsidian.json`)
     return undefined
   }
-  const planFile = await resolvePlanFile($)
+  const planFile = await resolvePlanFile($, known)
   const content: string = planFile ? await $.fs.read(planFile).catch(() => '') : ''
   if (!planFile || content.length < 20) {
     log($, `plan skipped: no plan content (${planFile ?? 'no plan file found'})`)
@@ -339,37 +359,25 @@ async function captureSuper($: any, session: string, path: string, content: stri
   const notePath = `Projects/Engineering/${type === 'plan' ? 'Plans' : 'Specs'}/${datePrefix}-${slug}`
   const journalPath = `Journal/${yyyy}/${mm}-${MONTHS[Number(mm) - 1]}/${datePrefix}`
   const meta = type === 'plan'
-    ? `goal: "${fields.goal ?? ''}"\ntech_stack: "${fields.tech_stack ?? ''}"\nspec_ref: "${fields.design_spec ?? fields.spec ?? ''}"`
-    : `ticket: "${fields.ticket ?? ''}"\nscope: "${fields.scope ?? ''}"`
+    ? `goal: ${JSON.stringify(fields.goal ?? '')}\ntech_stack: ${JSON.stringify(fields.tech_stack ?? '')}\nspec_ref: ${JSON.stringify(fields.design_spec ?? fields.spec ?? '')}`
+    : `ticket: ${JSON.stringify(fields.ticket ?? '')}\nscope: ${JSON.stringify(fields.scope ?? '')}`
   const note = `---\ncreated: ${mm}/${dd}/${yyyy}\nstatus: planned\ntags:\n  - ${type}\n  - claude-session\nsource: Claude Code (Superpowers)\nsession: ${session}\nsource_type: tool_input.content\nsource_file: ${path}\n${meta}\n---\n\n# ${title}\n\n## Logged In\n[[${journalPath}]]\n\n## ${type === 'plan' ? 'Plan' : 'Spec'}\n\n${content}\n`
-
-  const ob = async (...args: string[]) => $.process.run(['obsidian', `vault=${vault.name}`, ...args])
-  const esc = (s: string) => s.replace(/\n/g, '\\n')
 
   const linkedNote = type === 'plan'
     ? linkImplementationPrompt(note, await captureImplementationPrompt($, vault.path, notePath, title, path, `${mm}/${dd}/${yyyy}`, session))
     : note
-  const created = await ob('create', `path=${notePath}`, `content=${esc(linkedNote)}`, 'overwrite', 'silent')
-  if (created.exitCode !== 0) {
-    log($, `${type} note create failed (${created.exitCode}): ${notePath}`)
-    return
-  }
+  await $.fs.write(`${vault.path}/${notePath}.md`, linkedNote)
 
-  const entry = `- [[${notePath}|${title}]] (${type === 'plan' ? 'planned' : 'spec'})\\n  - ${summary}`
-  const appended = await ob('append', `path=${journalPath}.md`, `content=${entry}`)
-  if (appended.exitCode !== 0) await ob('daily:append', `content=${entry}`)
-
-  // daily:path points at a YYYY-MM-DD file that does not exist in this vault; the journal note is the real daily note.
-  const journalFile = `${journalPath}.md`
-  const read = await ob('property:read', 'name=tags', `path=${journalFile}`)
-  const existing = read.exitCode === 0
-    ? read.stdout.split('\n').map((t: string) => t.trim()).filter((t: string) => t && !t.startsWith('Error:'))
-    : []
-  const merged = [...new Set([...existing, ...newTags.split(',').map((t: string) => t.trim()).filter(Boolean)])]
-  const set = await ob('property:set', 'name=tags', `value=${merged.join(',')}`, 'type=list', `path=${journalFile}`)
-  if (set.exitCode !== 0 || /^Error:/m.test(set.stdout)) {
-    log($, `tag merge failed for ${journalFile}`)
-    $.ui.toast(`obsidian-capture: tag merge failed for ${journalFile}`)
+  try {
+    const journalFile = `${vault.path}/${journalPath}.md`
+    const journal: string = await $.fs.read(journalFile).catch(() => '')
+    const updated = upsertEntry(journal, notePath, title, type === 'plan' ? 'planned' : 'spec', summary)
+    const tags = sanitizeTags(newTags.split(','))
+    const withTags = tags.length ? mergeTags(updated, tags) : updated
+    if (withTags !== journal) await $.fs.write(journalFile, withTags)
+  } catch (err) {
+    log($, `${type} journal update failed for ${journalPath}: ${String(err).slice(0, 200)}`)
+    $.ui.toast(`obsidian-capture: journal update failed for ${journalPath}`)
   }
   log($, `${type} captured: ${notePath}`)
 }
@@ -385,7 +393,7 @@ export const register: Register = (on, options) => {
     if (!isReport && !sp) return ran
 
     const session = await $.session.id()
-    const job: Promise<unknown> = (isReport ? captureReport($, session, e.content) : captureSuper($, session, e.file_path, e.content, sp!))
+    const job: Promise<unknown> = (isReport ? captureReport($, session, e.file_path, e.content) : captureSuper($, session, e.file_path, e.content, sp!))
       .catch(err => {
         log($, `capture failed for ${e.file_path}: ${String(err).slice(0, 200)}`)
         $.ui.toast(`obsidian-capture failed: ${String(err).slice(0, 80)}`)
@@ -403,7 +411,10 @@ export const register: Register = (on, options) => {
   // Captures before the approval dialog, so a plan is saved whichever way it is answered.
   on('tool.call', { tool: 'ExitPlanMode' }, async ($, e, next) => {
     const session = await $.session.id()
-    const capture: Promise<PlanInfo | undefined> = capturePlan($, session).catch(err => {
+    // The plan file seen by this approval is spent; the next plan finds its own.
+    const known = lastPlanFile
+    lastPlanFile = undefined
+    const capture: Promise<PlanInfo | undefined> = capturePlan($, session, known).catch(err => {
       log($, `plan capture failed: ${String(err).slice(0, 200)}`)
       $.ui.toast(`obsidian-capture failed: ${String(err).slice(0, 80)}`)
       return undefined

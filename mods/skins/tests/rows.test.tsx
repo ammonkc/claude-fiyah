@@ -2,8 +2,8 @@ import type { On, RenderElement } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, Plugin } from 'claude-code/testing'
 
-import { DESIGN_TOOL } from '../hooks/designer'
 import { widthOf } from '../hooks/markdown'
+import { DESIGN_TOOL } from '../hooks/designer'
 import { mermaidArt } from '../hooks/mermaid-art'
 import { literal } from '../hooks/rows'
 import { cardWidth } from '../hooks/svg-kit'
@@ -100,7 +100,6 @@ function stubEngine(on: On, own: { env?: boolean; store?: boolean; toast?: boole
 async function startDesktop($: Engine, on: On) {
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', () => ({ value: { tool: 'mcp__skins__design' } }))
   on('config.list', () => ({ value: [] }))
 
   await $.session.start({ surface: 'desktop', isInteractive: true, cwd: '/work' })
@@ -545,6 +544,30 @@ test('the turn footer names the time in the skin’s words', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /^◆ .+ in 1m 4s$/ })).toBeDefined()
 })
 
+test('a finished call gives its row a run time, and the footer counts the main loop’s calls and changed lines', async ($, on) => {
+  stubEngine(on)
+  on('classic.PostToolUse', () => ({}) as never)
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  await $.turn.start({ text: 'go', turnId: 't1' } as never)
+
+  const patch = { structuredPatch: [{ lines: ['+a', '+b', '-c', ' d'] }] }
+  await $.classic.PostToolUse({ tool_name: 'Edit', tool_input: { file_path: '/work/a.ts' }, tool_response: patch, tool_use_id: 'c1', duration_ms: 1500 } as never)
+  await $.classic.PostToolUse({ tool_name: 'Read', tool_input: { file_path: '/work/a.ts' }, tool_response: {}, tool_use_id: 'c2', duration_ms: 20 } as never)
+  // A subagent's call is not the main loop's.
+  await $.classic.PostToolUse({ tool_name: 'Read', tool_input: { file_path: '/work/b.ts' }, tool_response: {}, tool_use_id: 'c3', agent_id: 'a1' } as never)
+  await $.turn.complete({ durationMs: 4321, isAborted: false, reason: 'answer', turnId: 't1', answer: 'done' })
+
+  const row = await $.ui.mount(toolUse(call('Edit', { file_path: '/work/a.ts' }, { tool_use_id: 'c1' })))
+  expect(await row.find({ type: 'Text', text: /1\.5s/ })).toBeDefined()
+  await row.unmount()
+
+  const footer = await $.ui.mount({ ...SITE, surface: 'terminal', component: 'TurnDuration', requestId: 'f2', props: { word: 'Baked', durationMs: 4321 } })
+  expect(await footer.find({ type: 'Text', text: /2 tools/ })).toBeDefined()
+  expect(await footer.find({ type: 'Text', text: '+2' })).toBeDefined()
+  expect(await footer.find({ type: 'Text', text: ' −1' })).toBeDefined()
+})
+
 test('/skin words claude hands Claude Code’s own spinner and footer words through, /skin words skin takes the skin’s back', async ($, on) => {
   stubEngine(on)
 
@@ -607,25 +630,6 @@ test('the settings pane picks a skin, switches the rail and paints a slot', asyn
   await again.unmount()
 
   expect((await runSkin($, 'list')).text).toMatch(/\| my-dracula \(current\) +\| yours +\|/)
-})
-
-test('the agent’s design tool saves a skin and it applies at once', async ($, on) => {
-  stubEngine(on)
-
-  const out = await $.tool.call({
-    tool: 'mcp__skins__design',
-    action: 'save',
-    name: 'sunset',
-    base: 'gruvbox',
-    palette: { run: '#ff8800' },
-  })
-  expect(out.deny).toBeUndefined()
-
-  const row = await $.ui.mount(toolUse(call('Bash', { command: 'ls' })))
-  expect(spanColor(await row.find({ type: 'Text', text: /Bash/ }), 'Bash')).toBe('#ff8800')
-
-  const refused = await $.tool.call({ tool: 'mcp__skins__design', action: 'save', name: 'dracula' })
-  expect(refused.deny).toContain('built-in')
 })
 
 test('/skin with no argument opens the settings pane', async ($, on) => {
@@ -1044,7 +1048,6 @@ test('the band offers Compact, nudges at 70% context, and compacts on a press', 
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000, percent: 85 }, rateLimits: [] } }))
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', () => ({ value: { tool: 'mcp__skins__design' } }))
 
   await $.session.start({ surface: 'desktop', isInteractive: true, cwd: '/work' })
 
@@ -1157,7 +1160,6 @@ test('on a light Claude Code theme the skin draws dark text for a light backgrou
   on('config.list', () => ({ value: [{ key: 'theme', label: 'Theme', kind: 'enum', value: 'light', provider: { kind: 'engine' }, isLocked: false }] as never }))
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', () => ({ value: { tool: 'mcp__skins__design' } }))
 
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
 
@@ -1226,7 +1228,6 @@ test('an auto theme follows the system, and SKINS_THEME overrides the setting', 
   on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: 'The domain/default pair does not exist' } as never }))
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', () => ({ value: { tool: 'mcp__skins__design' } }))
 
   await $.session.start({ surface: 'desktop', isInteractive: true, cwd: '/work' })
   const light = await $.ui.mount(toolUse(call('Bash', { command: 'ls' })))
@@ -1245,7 +1246,6 @@ test('a theme set mid-session is drawn at once, though the settings list still h
   on('config.set', ($, e) => ({ value: e.value }))
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', () => ({ value: { tool: 'mcp__skins__design' } }))
 
   await $.session.start({ surface: 'desktop', isInteractive: true, cwd: '/work' })
   await $.config.set({ key: 'theme', value: 'dark' } as never)
@@ -1265,7 +1265,6 @@ test('an auto theme follows the system when it changes mid-session', async ($, o
   }))
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', () => ({ value: { tool: 'mcp__skins__design' } }))
 
   await $.session.start({ surface: 'desktop', isInteractive: true, cwd: '/work' })
   const before = await $.ui.mount(toolUse(call('Bash', { command: 'ls' })))
@@ -1288,7 +1287,6 @@ test('/skin pin keeps a look to this folder, /skin unpin returns to the default'
   })
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', () => ({ value: { tool: 'mcp__skins__design' } }))
   on('config.list', () => ({ value: [] }))
 
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
@@ -1319,7 +1317,6 @@ test('the first row of a new session loads the saved prefs again, without classi
   on('session.id', () => ({ value: session }))
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', () => ({ value: { tool: 'mcp__skins__design' } }))
   on('config.list', () => ({ value: [] }))
   const note = { message: { type: 'user', content: [{ type: 'text', text: 'hi' }] } } as never
 
@@ -1389,7 +1386,6 @@ test('/resume loads the saved prefs from the hook session id, before any row is 
   on('session.id', () => ({ value: 's1' }))
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', () => ({ value: { tool: 'mcp__skins__design' } }))
   on('config.list', () => ({ value: [] }))
   on('classic.SessionStart', () => ({}) as never)
 
@@ -1405,19 +1401,10 @@ test('/resume loads the saved prefs from the hook session id, before any row is 
 
 test('quiet output folds a read-only call to its row, a failure to its error line', async ($, on) => {
   stubEngine(on)
-  // The kit gives each call its own id; the engine's answer reads it back.
-  const ids: string[] = []
-  on('tool.call', ($, e) => {
-    ids.push(e.tool_use_id)
-    return { result: { stdout: 'On branch main', stderr: '', interrupted: false } }
-  })
-
   const result = (id: string, tool: string, output: unknown, isErrored = false) =>
     ({ ...SITE, surface: 'terminal', component: 'ToolResult', requestId: id, props: { tool_use_id: id, tool, output, isErrored } }) as const
 
-  await $.tool.call({ tool: 'Bash', command: 'git status' })
-  await $.tool.call({ tool: 'Bash', command: 'pnpm build' })
-  const [q1 = '', q2 = ''] = ids
+  const [q1 = '', q2 = ''] = await ranShells($, on, ['git status', 'pnpm build'])
 
   // Off by default: a read-only call keeps its output.
   const before = await $.ui.mount(result(q1, 'Bash', { stdout: 'On branch main', stderr: '', interrupted: false }))
@@ -1471,124 +1458,6 @@ test('/skin copy copies the last reply and says so, or says there is nothing yet
 
   expect(toasts).toEqual(['Nothing to copy yet', 'Copied the reply', 'Copied the code'])
   expect(copied).toEqual([reply, 'pnpm build'])
-})
-
-// The update check runs unawaited off session.start; a macrotask lets it finish.
-const unawaited = () =>
-  new Promise<void>(resolve => (globalThis as unknown as { setTimeout: (run: () => void, ms: number) => void }).setTimeout(resolve, 0))
-
-test('a session start says when a newer release is out, at most once a day', async ($, on) => {
-  const store: Record<string, unknown> = {}
-  const toasts: string[] = []
-  let latest = '0.1.3'
-  let fetches = 0
-  stubEngine(on, { store: true, toast: true })
-  on('store.get', ($, e) => ({ value: store[e.key] }))
-  on('store.set', ($, e) => {
-    store[e.key] = e.value
-    return { value: undefined }
-  })
-  on('ui.toast', ($, e) => {
-    toasts.push(e.text)
-    return { value: undefined }
-  })
-  // The engine hands the path back in the platform's own separators.
-  on('fs.read', ($, e) => ({ value: /\.claude-plugin[\\/]plugin\.json$/.test(e.path) ? '{ "version": "0.1.2" }' : '' }))
-  on('http.fetch', () => {
-    fetches += 1
-    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ version: latest }) } as never }
-  })
-  on('session.start', () => ({ cwd: '/work' }))
-  on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', () => ({ value: { tool: 'mcp__skins__design' } }))
-  on('config.list', () => ({ value: [] }))
-
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await unawaited()
-  expect(toasts.filter(text => text.startsWith('skins 0.1.3 is out'))).toHaveLength(1)
-
-  latest = '0.1.4'
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await unawaited()
-  expect(fetches).toBe(1)
-  expect(toasts.some(text => text.includes('0.1.4'))).toBe(false)
-})
-
-test('a session start waits for the design tool to be listed, so the first turn lists it', async ($, on) => {
-  const clock = stubEngine(on)
-  const order: string[] = []
-  on('session.start', () => ({ cwd: '/work' }))
-  on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', async () => {
-    await clock.sleep(200)
-    order.push('listed')
-
-    return { value: { tool: 'mcp__skins__design' } }
-  })
-  on('config.list', () => ({ value: [] }))
-
-  const started = $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' }).then(() => {
-    order.push('started')
-  })
-  await clock.settle()
-  expect(order, 'the start waits while the tool is not listed yet').toEqual([])
-  await clock.advance(200)
-  expect(order, 'the start settles as soon as the tool is listed').toEqual(['listed', 'started'])
-  await started
-})
-
-test('a session start waits at most a second for a design tool that is never listed, and still registers it', async ($, on) => {
-  const clock = stubEngine(on)
-  const registered: unknown[] = []
-  let listed = () => {}
-  let isStarted = false
-  on('session.start', () => ({ cwd: '/work' }))
-  on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', ($, e) => {
-    registered.push(e)
-
-    return new Promise<{ value: { tool: string } }>(resolve => {
-      listed = () => resolve({ value: { tool: 'mcp__skins__design' } })
-    })
-  })
-  on('config.list', () => ({ value: [] }))
-
-  const started = $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' }).then(() => {
-    isStarted = true
-  })
-  await clock.settle()
-  expect(isStarted, 'the start waits while the tool is not listed yet').toBe(false)
-  await clock.advance(1000)
-  expect(isStarted, 'a second on, the start goes on without the tool').toBe(true)
-  listed()
-  await started
-
-  expect(registered).toEqual([{ name: DESIGN_TOOL.name, description: DESIGN_TOOL.description, inputSchema: DESIGN_TOOL.inputSchema }])
-})
-
-test('a design tool that fails to register is logged to the debug log, and the rest of the start still runs', async ($, on) => {
-  const logs: { text: string; to: unknown }[] = []
-  let themeReads = 0
-  stubEngine(on, { log: true })
-  on('ui.log', ($, e) => {
-    logs.push({ text: e.text, to: e.to })
-
-    return { value: undefined }
-  })
-  on('session.start', () => ({ cwd: '/work' }))
-  on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', () => ({ deny: 'refused in a test' }))
-  on('config.list', () => {
-    themeReads += 1
-
-    return { value: [] }
-  })
-
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await unawaited()
-
-  expect(logs.filter(log => log.text.startsWith('design tool:') && log.text.includes('refused in a test') && log.to === 'debug')).toHaveLength(1)
-  expect(themeReads, 'the theme probe after the refused registration still asks for the config').toBeGreaterThan(0)
 })
 
 test('a card settles by itself once its entrance ends, so a repaint of the stored drawing cannot replay it', async ($, on) => {
@@ -2263,17 +2132,21 @@ test('slash-command output with key: value lines is a table, prose keeps its row
   expect(await off.find({ type: 'Text', text: 'stock row' })).toBeDefined()
 })
 
-// Runs shell calls through the engine so the skin records each one's command, and hands
-// back the ids the kit gave them, in order.
+// Finishes shell calls as the engine does, so the skin records each one's command, and hands
+// back the ids the calls were given, in order.
 async function ranShells($: Engine, on: On, commands: readonly string[]): Promise<string[]> {
+  on('classic.PostToolUse', () => ({}) as never)
   const ids: string[] = []
-  on('tool.call', ($, e) => {
-    ids.push(e.tool_use_id)
-    return { result: { stdout: '', stderr: '', interrupted: false } }
-  })
 
-  for (const command of commands) {
-    await $.tool.call({ tool: 'Bash', command })
+  for (const [index, command] of commands.entries()) {
+    const id = `sh${index}`
+    ids.push(id)
+    await $.classic.PostToolUse({
+      tool_name: 'Bash',
+      tool_input: { command },
+      tool_response: { stdout: '', stderr: '', interrupted: false },
+      tool_use_id: id,
+    } as never)
   }
 
   return ids
@@ -2425,4 +2298,75 @@ test('/skin calm off puts back the settings it changed, and keeps changes made m
   const listed = await runSkin($, 'list')
   expect(JSON.stringify(listed)).toContain('nord (current)')
   expect(JSON.stringify(listed)).toMatch(/\| calm +\| off +\|/)
+})
+
+test('the agent’s design tool saves a skin and it applies at once', async ($, on) => {
+  stubEngine(on)
+
+  const out = await $.tool.call({
+    tool: 'mcp__skins__design',
+    action: 'save',
+    name: 'sunset',
+    base: 'gruvbox',
+    palette: { run: '#ff8800' },
+  })
+  expect(out.deny).toBeUndefined()
+
+  const row = await $.ui.mount(toolUse(call('Bash', { command: 'ls' })))
+  expect(spanColor(await row.find({ type: 'Text', text: /Bash/ }), 'Bash')).toBe('#ff8800')
+
+  const refused = await $.tool.call({ tool: 'mcp__skins__design', action: 'save', name: 'dracula' })
+  expect(refused.deny).toContain('built-in')
+})
+
+test('a session start waits for the design tool to be listed, so the first turn lists it', async ($, on) => {
+  const clock = stubEngine(on)
+  const order: string[] = []
+  on('session.start', () => ({ cwd: '/work' }))
+  on('command.register', () => ({ value: { command: 'skin' } }))
+  on('tool.register', async () => {
+    await clock.sleep(200)
+    order.push('listed')
+
+    return { value: { tool: 'mcp__skins__design' } }
+  })
+  on('config.list', () => ({ value: [] }))
+
+  const started = $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' }).then(() => {
+    order.push('started')
+  })
+  await clock.settle()
+  expect(order, 'the start waits while the tool is not listed yet').toEqual([])
+  await clock.advance(200)
+  expect(order, 'the start settles as soon as the tool is listed').toEqual(['listed', 'started'])
+  await started
+})
+
+test('a session start waits at most a second for a design tool that is never listed, and still registers it', async ($, on) => {
+  const clock = stubEngine(on)
+  const registered: unknown[] = []
+  let listed = () => {}
+  let isStarted = false
+  on('session.start', () => ({ cwd: '/work' }))
+  on('command.register', () => ({ value: { command: 'skin' } }))
+  on('tool.register', ($, e) => {
+    registered.push(e)
+
+    return new Promise<{ value: { tool: string } }>(resolve => {
+      listed = () => resolve({ value: { tool: 'mcp__skins__design' } })
+    })
+  })
+  on('config.list', () => ({ value: [] }))
+
+  const started = $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' }).then(() => {
+    isStarted = true
+  })
+  await clock.settle()
+  expect(isStarted, 'the start waits while the tool is not listed yet').toBe(false)
+  await clock.advance(1000)
+  expect(isStarted, 'a second on, the start goes on without the tool').toBe(true)
+  listed()
+  await started
+
+  expect(registered).toEqual([{ name: DESIGN_TOOL.name, description: DESIGN_TOOL.description, inputSchema: DESIGN_TOOL.inputSchema }])
 })

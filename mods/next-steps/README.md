@@ -18,7 +18,7 @@ The plugin never submits a prompt on its own.
 
 It is a function-hooks plugin (`hooks/register.tsx`):
 
-- `turn.complete`: forks the session with `$.model.fork` to ask for likely next prompts. The fork shares the session's prompt cache, so it costs about one short reply.
+- `turn.complete`: forks the session with `$.model.fork` to ask for likely next prompts. The fork shares the session's prompt cache, so it costs about one short reply. It runs at `low` effort. On a model that takes effort per message that changes nothing about the cache. On one that takes effort as a whole request setting, the first fork at a level other than your session's writes the conversation to the cache once. A fork that has not answered within 30 seconds is dropped and the loading line clears.
 - `$.command.list`: the session's skills and slash commands (plugin, user and MCP ones with their descriptions) go into the fork's question, so a suggestion can be `/skill arguments`. A suggestion that names a command the session does not have is dropped.
 - `ui.render` on `AbovePrompt`: draws the suggestions as buttons.
 - A press calls `$.prompt.fill`; the top suggestion goes to `$.prompt.suggest`.

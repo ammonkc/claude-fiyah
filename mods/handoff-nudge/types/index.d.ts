@@ -25,6 +25,10 @@ declare module 'claude-code' {
       suggestion: HandoffNudgeSuggestion
       /** Whether a /handoff command is installed. */
       hasHandoff: boolean
+      /** When usage last crossed up over the threshold (ms), 0 before the first time. */
+      crossedAt: number
+      /** The handoff note this mod saw first, by its path, and when; a note seen before the last crossing is stale. */
+      noteSeen: { path: string; at: number } | null
     }
     handoff: { view: HandoffNudgeHandoffView }
   }

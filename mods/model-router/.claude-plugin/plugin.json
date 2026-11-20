@@ -1,6 +1,6 @@
 {
   "name": "model-router",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Picks the model of each subagent. At agent.spawn Haiku reads the task and answers with a tier and a confidence; the model moves only when the confidence clears the bar for that direction (low to spend more, high to spend less). A model the caller named is never changed. Understands Bedrock inference profile ARNs through the ANTHROPIC_DEFAULT_*_MODEL variables. /model-router shows the last picks.",
   "author": { "name": "ammonkc" },
   "repository": "https://github.com/ammonkc/claude-fiyah",

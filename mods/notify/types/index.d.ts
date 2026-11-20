@@ -7,6 +7,7 @@ declare module 'claude-code' {
     notify: {
       entries: NotifyEntry[]
       isMuted: boolean
+      isAutoMode: boolean
     }
   }
 }

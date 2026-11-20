@@ -8,14 +8,12 @@ const OVERRIDE = { plugin: 'effort-optimizer', key: 'override' } as const
 const ACCENT = '#d97757'
 
 // Module variables reset on a reload; the band and the override live in $.state.
-let home = ''
 let mode: Mode | null = null
 let minConfidence = 0.6
 let cooldownTurns = 3
 let defaultMode: Mode = 'suggest'
 // Bumped on every judged prompt, so a slow judge for an older prompt is dropped.
 let gen = 0
-let nextId = 1
 // Judged prompts since the last suggestion (starts high: no cooldown at first).
 let sinceSuggest = Number.MAX_SAFE_INTEGER
 // The level the main chat's requests ask for, before this mod touches them.
@@ -23,14 +21,37 @@ let seen: Level | '' = ''
 // The level the picker was at when the override took hold. null: adopt the next request's level.
 let base: Level | '' | null = null
 
+// Past this size the log moves to `effort-optimizer.log.1` at session start.
+const LOG_MAX_BYTES = 256 * 1024
+
+// The log folder's home comes from $HOME alone, never from the plugin's own path (under --plugin-dir that is the repo).
+async function logFile($: EngineInterface): Promise<string> {
+  const h = ((await $.env.get('HOME')) ?? '').replace(/\/+$/, '')
+  return h.startsWith('/') ? `${h}/.claude/mods-logs/effort-optimizer.log` : ''
+}
+
+// Appended through /bin/sh, so two lines written at once cannot overwrite each other.
 async function log($: EngineInterface, line: string) {
-  if (!home) return
   try {
-    const path = `${home}/.claude/mods-logs/effort-optimizer.log`
-    const old = (await $.fs.exists(path)) ? String(await $.fs.read(path)) : ''
-    await $.fs.write(path, `${old.slice(-20_000)}${new Date(await $.clock.now()).toISOString()} ${line}\n`)
+    const path = await logFile($)
+    if (!path) return
+    await $.process.run(['/bin/sh', '-c', 'mkdir -p "$(dirname "$1")" && cat >> "$1"', 'sh', path], {
+      stdin: `${new Date(await $.clock.now()).toISOString()} ${line}\n`,
+      timeoutMs: 5_000,
+    })
   } catch {
     // Nowhere left to report it.
+  }
+}
+
+async function rotateLog($: EngineInterface) {
+  try {
+    const path = await logFile($)
+    if (!path) return
+    const st = await $.fs.stat(path)
+    if (st.size > LOG_MAX_BYTES) await $.process.run(['/bin/mv', '-f', path, `${path}.1`], { timeoutMs: 5_000 })
+  } catch {
+    // No log yet.
   }
 }
 
@@ -97,14 +118,14 @@ async function judge($: EngineInterface, text: string, mine: number) {
     await setOverride($, pick.level)
     return log($, `${verdict}: applied (auto)`)
   }
-  await $.state.set(BAND, { id: nextId++, from: cur, to: pick.level })
+  // The clock, not a counter: a counter restarts on a reload while the band in $.state survives it.
+  await $.state.set(BAND, { id: await $.clock.now(), from: cur, to: pick.level })
   return log($, `${verdict}: suggested`)
 }
 
 export const register: Register = (on, options) => {
   mode = null
   gen = 0
-  nextId = 1
   sinceSuggest = Number.MAX_SAFE_INTEGER
   seen = ''
   base = null
@@ -113,7 +134,7 @@ export const register: Register = (on, options) => {
   cooldownTurns = typeof options?.cooldownTurns === 'number' ? options.cooldownTurns : 3
 
   on('session.start', async ($, e, next) => {
-    home = $.plugin.root.split('/.claude/')[0] ?? ''
+    await rotateLog($)
     await $.command.register({
       name: 'effort-optimizer',
       description: 'Effort Optimizer. suggest: show a band, auto: apply by itself, off: do nothing',

@@ -8,11 +8,17 @@ export const MARKER = ';;'
 export const KEEP_MS = 30 * 24 * 3600 * 1000
 export type Lang = 'en' | 'ko'
 
-// The text before the marker when the prompt ends with it, else null.
+// The text before the marker when the prompt ends with it, else null. The marker counts only as a word of its own
+// (the start of the text or after whitespace), outside an open code fence, and not as the end of a shell `case` arm.
 export function marked(text: string) {
   const t = text.trimEnd()
   if (!t.endsWith(MARKER)) return null
-  return t.slice(0, -MARKER.length).trimEnd()
+  const before = t.slice(0, -MARKER.length)
+  if (before !== '' && !/\s$/.test(before)) return null
+  if ((before.match(/^[ \t]*(```|~~~)/gm) ?? []).length % 2 === 1) return null
+  const lastCase = [...before.matchAll(/^[ \t]*case[ \t]+\S+[ \t]+in[ \t]*$/gm)].at(-1)
+  if (lastCase && !/\besac\b/.test(before.slice(lastCase.index))) return null
+  return before.trimEnd()
 }
 
 const lines = (text: string) => text.split('\n').map(l => l.trim()).filter(Boolean)
@@ -65,9 +71,9 @@ export const text = {
     usage: 'Usage: /drafts, /drafts <n>, /drafts rm <n>, /drafts undo',
     draftUsage: `Usage: /draft <text>. Or end the prompt you are writing with ${MARKER} and press Enter.`,
     picker: 'Drafts',
-    pickHint: 'press a number to use one, 0 to close',
-    keysHint: 'number keys',
-    paneHint: 'Click a draft or press its number to put it in the prompt box.',
+    pickHint: 'click one, or ctrl+x tab then its letter; x closes',
+    keysHint: 'letter keys',
+    paneHint: 'Click a draft to put it in the prompt box.',
     saveButton: 'Save prompt box',
     undoButton: 'Undo',
     deletedLine: (t: string) => `Deleted: ${t}`,
@@ -75,8 +81,8 @@ export const text = {
     ask: 'Which draft?',
     closed: 'Closed.',
     more: (n: number) => `Next ${n} ▸`,
-    openedWide: 'Pick a draft in the sidebar, or press its number. 0 closes.',
-    openedNarrow: 'Press a number to put a draft in the prompt box. 0 closes.',
+    openedWide: 'Pick a draft in the sidebar, or press ctrl+x tab and its letter. x closes.',
+    openedNarrow: 'Click a draft, or press ctrl+x tab and its letter, to put it in the prompt box. x closes.',
     meta: (a: string, n: number) => `${a}, ${n} chars`,
     cmdDraft: `Save a prompt as a draft of this session: /draft <text>, or end any prompt with ${MARKER}`,
     cmdDrafts: "This session's drafts: pick one, /drafts <n>, /drafts rm <n>, /drafts undo",
@@ -96,9 +102,9 @@ export const text = {
     usage: '사용법: /drafts, /drafts <번호>, /drafts rm <번호>, /drafts undo',
     draftUsage: `사용법: /draft <내용>. 또는 쓰던 프롬프트 끝에 ${MARKER} 를 붙이고 Enter.`,
     picker: '임시저장',
-    pickHint: '번호를 누르면 꺼내고, 0은 닫기',
-    keysHint: '번호 키',
-    paneHint: '클릭하거나 번호를 누르면 입력창에 꺼냅니다.',
+    pickHint: '클릭하거나 ctrl+x tab 후 글자 키로 꺼내고, x는 닫기',
+    keysHint: '글자 키',
+    paneHint: '클릭하면 입력창에 꺼냅니다.',
     saveButton: '입력창 저장',
     undoButton: '되돌리기',
     deletedLine: (t: string) => `지웠습니다: ${t}`,
@@ -106,8 +112,8 @@ export const text = {
     ask: '어떤 임시저장을 꺼낼까요?',
     closed: '닫았습니다.',
     more: (n: number) => `다음 ${n}개 ▸`,
-    openedWide: '사이드바에서 고르거나, 번호를 눌러 바로 꺼내세요. 0은 닫기.',
-    openedNarrow: '번호를 누르면 입력창에 꺼냅니다. 0은 닫기.',
+    openedWide: '사이드바에서 고르거나, ctrl+x tab 후 글자 키로 꺼내세요. x는 닫기.',
+    openedNarrow: '클릭하거나 ctrl+x tab 후 글자 키로 입력창에 꺼냅니다. x는 닫기.',
     meta: (a: string, n: number) => `${a}, ${n}자`,
     cmdDraft: `이 세션에 프롬프트 임시저장: /draft <내용>, 또는 프롬프트 끝에 ${MARKER}`,
     cmdDrafts: '이 세션의 임시저장: 골라서 꺼내기, /drafts <번호>, /drafts rm <번호>, /drafts undo',

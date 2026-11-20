@@ -35,6 +35,8 @@ const SECRET = [
 // The module's own: a reload drops them; the store keeps the learnings themselves.
 let model = 'haiku'
 let isDraining = false
+/** The check failed and the person was told, once for the session. */
+let hasWarned = false
 /** Saves to CLAUDE.md files run one after another inside this session. */
 let writing: Promise<unknown> = Promise.resolve()
 const queue: string[] = []
@@ -61,6 +63,16 @@ export function similarity(a: string, b: string) {
   for (const p of x) if (y.has(p)) both += 1
   return both / (x.size + y.size - both)
 }
+
+/**
+ * Words a correction or a standing preference tends to carry. A prompt in plain ASCII with none of them
+ * ("run the tests", "vim") has nothing to learn, so it costs no model call. Anything with a non-ASCII
+ * character (Russian, Korean, accents, ...) always goes to the model: this list does not pretend to cover those languages.
+ */
+const CUES =
+  /\b(no|not|never|always|don'?t|do not|dont|stop|instead|rather|prefer|should|shouldn'?t|must|use|using|used|avoid|wrong|incorrect|actually|remember|from now|going forward|next time|in future|every time|whenever|default|convention|rule|only|without|keep|make sure|ensure|nunca|siempre|jamais|toujours|immer|nie|nicht|sempre)\b/i
+
+export const hasCue = (text: string) => /[^\x00-\x7f]/.test(text) || CUES.test(text)
 
 export const looksSecret = (s: string) => SECRET.some(re => re.test(s))
 
@@ -163,9 +175,28 @@ async function refreshBand($: EngineInterface) {
   await update($, pending, () => mine)
 }
 
+/** The CLAUDE.md for a scope; undefined (and a toast) when HOME is not set, so a global rule never lands in `/.claude`. */
 async function fileFor($: EngineInterface, scope: 'global' | 'project', root: string) {
-  if (scope === 'global') return `${(await $.env.get('HOME')) ?? ''}/.claude/CLAUDE.md`
-  return `${root}/CLAUDE.md`
+  if (scope === 'project') return `${root}/CLAUDE.md`
+  const home = (await $.env.get('HOME')) ?? ''
+  if (home === '') {
+    $.ui.toast('reflect: HOME is not set, so there is no ~/.claude/CLAUDE.md to write; nothing kept')
+    return undefined
+  }
+  return `${home}/.claude/CLAUDE.md`
+}
+
+function warnOnce($: EngineInterface, why: string) {
+  if (hasWarned) return
+  hasWarned = true
+  $.ui.toast(`reflect: the rule check failed (${why}); your prompts are fine, nothing is learned until it works`)
+}
+
+/** Store writes run one after another, in this session: a read-modify-write never interleaves with another. */
+function serial<T>(job: () => Promise<T>): Promise<T> {
+  const run = writing.then(job)
+  writing = run.catch(() => undefined)
+  return run
 }
 
 async function readText($: EngineInterface, path: string) {
@@ -190,7 +221,9 @@ async function record($: EngineInterface, v: Verdict, root: string, isExplicit: 
     await saveItems($, list)
     return
   }
-  const target = await readText($, await fileFor($, v.scope, root))
+  const path = await fileFor($, v.scope, root)
+  if (path === undefined) return
+  const target = await readText($, path)
   const isKnown = target
     .split('\n')
     .some(line => /^\s*[-*] /.test(line) && similarity(line.replace(/^\s*[-*]\s+/, ''), v.rule) >= SAME)
@@ -229,9 +262,10 @@ async function checkOne($: EngineInterface, text: string) {
       $.ui.toast('reflect: not kept - one line, no secrets, at most 200 characters')
       return
     }
-    await record($, { isRule: true, rule, scope: 'global', confidence: 1 }, root, true)
+    await serial(() => record($, { isRule: true, rule, scope: 'global', confidence: 1 }, root, true))
     return
   }
+  if (!hasCue(text)) return
   const r = await $.model.complete({
     model,
     system: SYSTEM,
@@ -239,10 +273,13 @@ async function checkOne($: EngineInterface, text: string) {
     maxTokens: 300,
     timeoutMs: 30000,
   })
-  if (!r.isAnswered) return
+  if (!r.isAnswered) {
+    warnOnce($, r.reason)
+    return
+  }
   const v = parseVerdict(r.text)
   if (v === undefined || !v.isRule || v.confidence < MIN_CONFIDENCE) return
-  await record($, v, root, false)
+  await serial(() => record($, v, root, false))
 }
 
 /** Works through the queue one prompt at a time; each found rule shows at once, and one failure stops nothing. */
@@ -253,8 +290,9 @@ async function drain($: EngineInterface) {
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
       try {
         await checkOne($, next)
-      } catch {
+      } catch (error) {
         // A blocked model, a store or file error: this prompt is lost, the rest still run.
+        warnOnce($, String(error))
       }
       await refreshBand($).catch(() => undefined)
     }
@@ -263,7 +301,8 @@ async function drain($: EngineInterface) {
   }
 }
 
-async function decide($: EngineInterface, id: string, status: Learning['status'], scope?: Learning['scope'], project?: string) {
+/** The decision itself; callers already inside `serial` use this one. */
+async function decideNow($: EngineInterface, id: string, status: Learning['status'], scope?: Learning['scope'], project?: string) {
   const list = await items($)
   const one = list.find(l => l.id === id)
   if (one !== undefined && one.status === 'pending') {
@@ -275,13 +314,17 @@ async function decide($: EngineInterface, id: string, status: Learning['status']
   await refreshBand($)
 }
 
+const decide = ($: EngineInterface, id: string, status: Learning['status'], scope?: Learning['scope'], project?: string) =>
+  serial(() => decideNow($, id, status, scope, project))
+
 /** Writes the rule to the CLAUDE.md the button names, after reading it again just before the write. */
 async function saveTo($: EngineInterface, l: Learning, scope: 'global' | 'project') {
-  const job = writing.then(async () => {
+  await serial(async () => {
     const latest = (await items($)).find(one => one.id === l.id)
     if (latest === undefined || latest.status !== 'pending') return
     const root = await $.session.root()
     const path = await fileFor($, scope, root)
+    if (path === undefined) return
     const before = await readText($, path)
     const after = withRule(before, l.rule)
     if (after === undefined) {
@@ -289,12 +332,10 @@ async function saveTo($: EngineInterface, l: Learning, scope: 'global' | 'projec
       return
     }
     if (after !== before) await $.fs.write(path, after)
-    await decide($, l.id, 'saved', scope, root)
+    await decideNow($, l.id, 'saved', scope, root)
     await update($, savedThisSession, rules => [...rules, { rule: l.rule, scope, project: root }])
     $.ui.toast(after === before ? `reflect: already in ${path}` : `reflect: saved to ${path}`)
   })
-  writing = job.catch(() => undefined)
-  await job
 }
 
 async function skip($: EngineInterface, l: Learning) {
@@ -316,6 +357,7 @@ export const register: Register = (on, options) => {
   if (typeof options.model === 'string' && options.model.trim() !== '') model = options.model.trim()
 
   on('session.start', async ($, e, next) => {
+    hasWarned = false
     await $.command.register({ name: 'reflect-queue', description: 'List the learnings reflect found here and their state' })
     await $.command.register({ name: 'reflect-pause', description: 'Pause or resume the reflect check on your prompts' })
     await refreshBand($)

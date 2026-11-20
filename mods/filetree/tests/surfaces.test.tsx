@@ -286,6 +286,8 @@ test('macOS Claude Code app: desktop pane draws, selects, opens with open', { ti
   expect(await texts(ui)).toMatch(/"selected: "\]}\]}.*"truncate-start"},"children":\["README.md"\]/)
   const sent = await $.prompt.submit({ text: 'what is this?', wait: false, origin: { kind: 'composer' } })
   expect(JSON.stringify(sent)).toContain(`${root}/README.md`)
+  // The path reaches the model quoted, so a name with prose or newlines in it cannot read as an instruction.
+  expect(JSON.stringify(sent)).toContain(`refers to it: \\"${root}/README.md\\"`)
   await ui.post({ press: `${root}/README.md` }, { in: 'rows' })
   await clock.settle()
   expect(ran).toContainEqual(['open', '--', `${root}/README.md`])
