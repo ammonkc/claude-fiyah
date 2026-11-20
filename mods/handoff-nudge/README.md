@@ -20,7 +20,7 @@ Context at 63%. Saved to ~/.claude/handoffs/shop/2026-10-07-1342.md.  [Clear] [H
 1. On every context measurement the mod compares usage with the threshold. Once it is reached, the band appears.
 2. Handoff has the model write one focus line of at most 25 words (the unfinished task and its next step), then fills the prompt with `/handoff <focus>`. You press Enter to run it. If the model cannot answer, the prompt is filled with a plain `/handoff`.
 3. While the handoff mod writes the note the band says so. When it is done, the band shows where the note was saved. Clear fills `/clear`, and after that `/handoff resume` continues from the note.
-4. Hide dismisses the band. It comes back once usage falls below the threshold and rises past it again (after `/compact` or `/clear`).
+4. Hide dismisses the band. It comes back once usage falls below the threshold and rises past it again (after `/compact` or `/clear`). A note saved before that earlier crossing is no longer shown as "Saved to"; the band offers a new handoff instead, and a note saved in the new stretch is shown as usual. The check for an installed /handoff command runs once per session, not on every measurement.
 5. If no `/handoff` command is installed, the band says to install `handoff@claude-fiyah` as text. It never fills an install or shell command into the prompt.
 
 The mod reads the handoff mod's `handoff.view` state to know when the note is ready.

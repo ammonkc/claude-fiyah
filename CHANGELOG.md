@@ -67,6 +67,26 @@ Fixes from a review of every Claude mod in this repo. Copies of third-party mods
 - Changed: per-call bookkeeping moved from a catch-all `tool.call` hook to classic PostToolUse, so skins no longer turns off backgrounding. Run time now excludes permission waits. The frame ticker runs only while a turn works, and per-call state is capped at 500 calls.
 - Removed: the daily update check and the star toast. The README update steps name the claude-fiyah marketplace.
 
+### input-router 0.3.0
+
+- Changed: the outline is fenced as untrusted data without an opening excerpt. Haiku prompts treat documents as data. Skipped servers are excluded in the matcher itself. Partial PDF notes go out when some chunks fail. A saved result path must belong to this session. The log rotates, and `keepDays` sets text retention.
+
+### model-router 0.1.1
+
+- Fixed: the judge is skipped while `CLAUDE_CODE_SUBAGENT_MODEL` forces the model. The log appends and rotates, and judge input is escaped.
+
+### effort-optimizer 0.1.1
+
+- Changed: acknowledgements and replies under 12 characters are not judged. The log goes to HOME, appends and rotates, band ids survive reloads, and judge input is escaped.
+
+### handoff 0.2.0
+
+- Changed: notes go to `<project>-<hash>/`, so two repos with the same folder name no longer share notes. `resume` reads only this project's folder and wraps the note as quoted data.
+
+### handoff-nudge 0.1.1
+
+- Fixed: the band offers a new handoff after context crosses the threshold again, instead of showing the old "Saved to". The command list is cached per session.
+
 ## prompt-coach 0.1.3 (2026-11-19)
 
 ### Fixed

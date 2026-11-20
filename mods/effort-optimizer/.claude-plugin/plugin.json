@@ -1,6 +1,6 @@
 {
   "name": "effort-optimizer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Judges each prompt with Haiku and suggests a better effort level in a band above the prompt (Apply or Dismiss). Apply overrides the effort of the main chat's requests without touching your saved effort setting. Never blocks a turn and never touches subagents.",
   "author": { "name": "ammonkc" },
   "license": "MIT",

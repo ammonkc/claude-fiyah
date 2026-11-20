@@ -16,7 +16,7 @@ import type { Decision, PolicyConfig } from './policy'
 
 const NAME = 'model-router'
 const MAX_PICKS = 10
-const MAX_LOG_LINES = 400
+const LOG_MAX_BYTES = 256 * 1024
 
 const picks = atom({ plugin: 'model-router', key: 'picks' } as const, [] as ModelRouterPick[])
 const envAtom = atom(
@@ -24,24 +24,36 @@ const envAtom = atom(
   { isLoaded: false, tiers: {}, subagentModel: '' } as ModelRouterEnv,
 )
 
-/** The log's directory root: the home that holds the plugin's `.claude`, else $HOME, else none. */
+/** The log file under $HOME, or none when HOME is unknown or not absolute. */
 async function logPath($: EngineInterface): Promise<string | null> {
-  const root = $.plugin.root
-  const home = root.includes('/.claude/') ? root.split('/.claude/')[0] : await $.env.get('HOME')
-  return home ? `${home}/.claude/mods-logs/${NAME}.log` : null
+  const home = ((await $.env.get('HOME')) ?? '').replace(/\/+$/, '')
+  return home.startsWith('/') ? `${home}/.claude/mods-logs/${NAME}.log` : null
 }
 
-/** Decisions only, never a prompt. A read then a write that keeps the last MAX_LOG_LINES lines. */
+/** Decisions only, never a prompt. One append per line, so parallel spawns cannot drop each other's lines. */
 async function log($: EngineInterface, line: string): Promise<void> {
   try {
     const path = await logPath($)
     if (!path) return
-    const old = (await $.fs.exists(path)) ? String(await $.fs.read(path)) : ''
     const stamp = new Date(await $.clock.now()).toISOString()
-    const lines = `${old}${stamp} ${line.replace(/\s+/g, ' ')}\n`.split('\n')
-    await $.fs.write(path, lines.slice(-MAX_LOG_LINES - 1).join('\n'))
+    await $.process.run(['/bin/sh', '-c', 'mkdir -p "$(dirname "$1")" && cat >> "$1"', 'sh', path], {
+      stdin: `${stamp} ${line.replace(/\s+/g, ' ')}\n`,
+      timeoutMs: 5_000,
+    })
   } catch {
     // A log that cannot be written must not stop a spawn.
+  }
+}
+
+/** Past LOG_MAX_BYTES the log moves to `.log.1`, replacing the one before. */
+async function rotateLog($: EngineInterface): Promise<void> {
+  try {
+    const path = await logPath($)
+    if (!path) return
+    const st = await $.fs.stat(path)
+    if (st.size > LOG_MAX_BYTES) await $.process.run(['/bin/mv', '-f', path, `${path}.1`], { timeoutMs: 5_000 })
+  } catch {
+    // No log yet.
   }
 }
 
@@ -120,7 +132,12 @@ export const register: Register = (on, options) => {
   }
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: NAME, description: 'Model Router: the last subagent model picks and the tier map' })
+    try {
+      await $.command.register({ name: NAME, description: 'Model Router: the last subagent model picks and the tier map' })
+    } catch {
+      // No /model-router command is no reason to stop the session; the router still works.
+    }
+    await rotateLog($)
     const env = await loadEnv($)
     const tiers = Object.entries(env.tiers).map(([id, tier]) => `${shorten(id)}=${tier}`)
     await log($, `session start: ${tiers.length} id(s) mapped${tiers.length ? ` (${tiers.join(', ')})` : ''}${env.subagentModel ? '; CLAUDE_CODE_SUBAGENT_MODEL is set' : ''}`)
@@ -165,6 +182,13 @@ export const register: Register = (on, options) => {
     }
 
     const env = await loadEnv($)
+
+    // Claude Code applies CLAUDE_CODE_SUBAGENT_MODEL over any hook, so a judge call would be wasted.
+    if (env.subagentModel) {
+      await record($, { agentType: e.subagentType, from: e.parentModel ?? '', to: null, reason: 'skipped (forced by CLAUDE_CODE_SUBAGENT_MODEL)' })
+      return next(e)
+    }
+
     const decision = await judge($, { prompt: e.prompt, description: e.description, agentType: e.subagentType }, timeoutMs)
     // What the spawn would run on: the parent's model, which `inherit` and no model both mean.
     const current = e.parentModel ?? ''

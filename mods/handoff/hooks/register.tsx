@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { HandoffView } from '../types'
-import { composeNote, handoffPrompt, missingSections, newestNote, noteDirOf, sectionsOf, shortPath, stampOf } from './note'
+import { composeNote, handoffPrompt, missingSections, newestNote, noteDirOf, resumePromptOf, sectionsOf, shortPath, stampOf } from './note'
 import type { GitFacts } from './note'
 import { paneFailure } from './render-safe'
 
@@ -11,7 +11,6 @@ const GIT_TIMEOUT_MS = 10_000
 const STATUS_LINES = 40
 const STAT_LINES = 30
 const MAX_SUFFIX = 20
-const RESUME_PREAMBLE = 'Continue from this handoff:'
 
 const IDLE: HandoffView = { status: 'idle', path: '', text: '', detail: '', isCopied: false }
 const viewAtom = atom({ plugin: 'handoff', key: 'view' } as const, IDLE)
@@ -46,12 +45,10 @@ async function gitFacts($: EngineInterface): Promise<GitFacts | undefined> {
   }
 }
 
-/** The home folder: HOME, else the part of this plugin's own path before `/.claude/` (an installed plugin lives under it). */
+/** The home folder, from HOME alone: the plugin's own path is the repo under --plugin-dir, so it says nothing about home. */
 async function homeOf($: EngineInterface): Promise<string | undefined> {
   const home = await $.env.get('HOME').catch(() => undefined)
-  if (home !== undefined && home.trim() !== '') return home.trim()
-  const root = $.plugin.root
-  return root.includes('/.claude/') ? root.split('/.claude/')[0] || undefined : undefined
+  return home !== undefined && home.trim() !== '' ? home.trim() : undefined
 }
 
 /** `2026-10-07-1342.md`, or `-2`, `-3`… when that minute already has one. */
@@ -111,13 +108,17 @@ async function resume($: EngineInterface, settings: Settings): Promise<string> {
   const home = await homeOf($)
   const dir = noteDirOf({ setting: settings.dir, home, root })
   if (dir === undefined) return 'Could not find your home folder: set the notes folder to an absolute path.'
-  const entries = await $.fs.list(dir).catch(() => [])
-  const name = newestNote(entries.filter(entry => entry.kind === 'file').map(entry => entry.name))
+  const newestIn = async (folder: string) => {
+    const entries = await $.fs.list(folder).catch(() => [])
+    return newestNote(entries.filter(entry => entry.kind === 'file').map(entry => entry.name))
+  }
+  // Only this project's own folder: a folder named by the slug alone may hold another project's notes.
+  const name = await newestIn(dir)
   if (name === undefined) return `No handoff notes for this project yet in ${shortPath(dir, home)}. Run /handoff first.`
   const path = `${dir}/${name}`
   const note = await $.fs.read(path).catch(() => undefined)
   if (note === undefined) return `Could not read ${shortPath(path, home)}.`
-  await $.prompt.fill({ text: `${RESUME_PREAMBLE}\n\n${note.trim()}\n` })
+  await $.prompt.fill({ text: resumePromptOf(note) })
   return `Filled the prompt with ${shortPath(path, home)}. Press Enter to continue from it.`
 }
 

@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
@@ -11,14 +11,15 @@ const WINDOW = 1_000_000
 
 const measure = (tokens: number) => ({ context: { tokens, window: WINDOW }, rateLimits: [], changed: ['context' as const] })
 
-type World = { filled: string[]; forks: string[] }
-type Setup = { commands?: (typeof HANDOFF)[]; fork?: string | 'fail'; view?: { status: 'idle' | 'writing' | 'ready' | 'error'; path: string; detail?: string } }
+type World = { filled: string[]; forks: string[]; lists: number }
+type Setup = { hasClock?: boolean; commands?: (typeof HANDOFF)[]; fork?: string | 'fail'; view?: { status: 'idle' | 'writing' | 'ready' | 'error'; path: string; detail?: string } }
 
 const world = (on: On, setup: Setup = {}): World => {
-  const state: World = { filled: [], forks: [] }
+  const state: World = { filled: [], forks: [], lists: 0 }
+  if (!setup.hasClock) mock.clock(on)
   on('session.measure', (_$, e) => ({ changed: e.changed }))
   on('ui.render', () => ({ type: 'Box', props: { key: 'engine' }, children: [] }))
-  on('command.list', () => ({ value: setup.commands ?? [HANDOFF] }))
+  on('command.list', () => (state.lists++, { value: setup.commands ?? [HANDOFF] }))
   on('prompt.fill', (_$, e) => (state.filled.push(e.text), { isFilled: true }))
   on('model.fork', (_$, e) => {
     state.forks.push(e.prompt)
@@ -90,6 +91,47 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(state.filled).toEqual([])
   })
 }
+
+test('the command list is asked once, not on every measure past the threshold', async ($, on) => {
+  const state = world(on)
+  for (const tokens of [650_000, 660_000, 670_000, 680_000]) await $.session.measure(measure(tokens))
+  expect(state.lists).toBe(1)
+})
+
+test('a second handoff in the same session is offered again once usage has crossed up again', async ($, on) => {
+  const clock = mock.clock(on)
+  const setup: Setup = { hasClock: true }
+  world(on, setup)
+  const mount = () => $.ui.mount({ plugin: 'handoff-nudge', surface: 'terminal', component: 'AbovePrompt', props: PROPS })
+  const FIRST = '~/.claude/handoffs/shop/2026-10-07-1342.md'
+  const SECOND = '~/.claude/handoffs/shop/2026-10-07-1500.md'
+
+  await $.session.measure(measure(650_000))
+  await clock.advance(1000)
+  setup.view = { status: 'ready', path: FIRST }
+  await $.session.measure(measure(660_000))
+  expect(await (await mount()).find({ type: 'Text', text: `Context at 66%. Saved to ${FIRST}. ` })).toBeDefined()
+
+  // Compacted below the threshold, then past it again: the note is from the earlier stretch.
+  await clock.advance(1000)
+  await $.session.measure(measure(100_000))
+  await clock.advance(1000)
+  await $.session.measure(measure(700_000))
+  const again = await mount()
+  expect(await again.find({ type: 'Text', text: /Saved to/ })).toBeUndefined()
+  expect(await again.find({ key: 'handoff' })).toBeDefined()
+
+  // A new note of this stretch is shown, and a third crossing hides it in turn.
+  await clock.advance(1000)
+  setup.view = { status: 'ready', path: SECOND }
+  await $.session.measure(measure(710_000))
+  expect(await (await mount()).find({ type: 'Text', text: `Context at 71%. Saved to ${SECOND}. ` })).toBeDefined()
+  await clock.advance(1000)
+  await $.session.measure(measure(100_000))
+  await clock.advance(1000)
+  await $.session.measure(measure(720_000))
+  expect(await (await mount()).find({ type: 'Text', text: /Saved to/ })).toBeUndefined()
+})
 
 test('an absolute token threshold replaces the percentage', { options: { thresholdTokens: 150_000 } }, async ($, on) => {
   world(on)
