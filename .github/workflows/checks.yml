@@ -1,0 +1,122 @@
+# Checks for the Claude mods and the Node packages in this repo.
+#
+# The marketplace installs straight from GitHub, so whatever lands on main reaches every
+# session after `claude plugin update`. These jobs keep a broken mod off main.
+#
+# `claude plugin validate` and `claude plugin test` run logged out: neither calls a model,
+# so no secret is needed. Actions are pinned to commit SHAs on purpose (this repo exists to
+# avoid running unpinned third-party code); bump them by hand with the release's SHA.
+name: checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned so a new Claude Code release can't change results without a commit here.
+  # To move: set the new version, run the suite locally with it, then commit both together.
+  CLAUDE_CODE_VERSION: 2.1.328
+
+jobs:
+  mods:
+    name: Claude mods (validate + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install Claude Code
+        run: npm install --global --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+      - name: Validate and test every mod
+        run: |
+          claude --version
+          failed=()
+          for dir in mods/*/; do
+            mod=$(basename "$dir")
+            echo "::group::$mod"
+            ok=1
+            claude plugin validate "mods/$mod" || ok=0
+            claude plugin test "mods/$mod" || ok=0
+            echo "::endgroup::"
+            if [ "$ok" = 0 ]; then
+              echo "::error title=$mod::validate or test failed"
+              failed+=("$mod")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "Failed: ${failed[*]}"
+            exit 1
+          fi
+
+  repo:
+    name: Marketplace and version bumps
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Check marketplace listing and version bumps
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base=""
+          if [ "$EVENT" = pull_request ]; then
+            base="origin/$BASE_REF"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            base="$BEFORE"
+          fi
+          node scripts/ci/repo-checks.mjs $base
+
+  plan-progress:
+    name: plan-progress offline suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # The .mjs suite drives the compiled hooks module through a stub engine. It is not
+      # found by `claude plugin test`. The build goes to the runner's temp folder, not the repo.
+      - name: Compile and run regress.mjs
+        working-directory: mods/plan-progress/tests
+        run: |
+          build="$RUNNER_TEMP/plan-progress"
+          mkdir -p "$build"
+          npm install --prefix "$build/ts" --no-fund --no-audit typescript@5
+          cp stub.mjs "$build/"
+          TYPESCRIPT="$build/ts/node_modules/typescript" node compile.cjs ../hooks/register.tsx "$build/register.mjs"
+          node regress.mjs "file://$build/register.mjs"
+
+  node-packages:
+    name: OpenCode and Codex packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: OpenCode worktrunk tests
+        working-directory: opencode/worktrunk
+        run: |
+          npm ci --ignore-scripts --no-fund --no-audit
+          npm test
+      - name: Codex obsidian-capture tests
+        run: node --test skills/codex-obsidian-capture/tests/capture.test.mjs
