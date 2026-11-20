@@ -2,6 +2,15 @@
 
 Personal Claude Code mods, Codex plugins, and OpenCode packages.
 
+## Checks
+
+`.github/workflows/checks.yml` runs on every pull request and every push to `main`. The marketplace installs from GitHub, so a broken mod on `main` would reach every session after `claude plugin update`.
+
+* **Claude mods:** `claude plugin validate` and `claude plugin test` for every folder in `mods/`, with Claude Code pinned to the version in the workflow. Both run logged out, since neither calls a model.
+* **Marketplace and versions:** `scripts/ci/repo-checks.mjs` checks that every mod is listed in `.claude-plugin/marketplace.json`, and that a mod that changed has a new version. Without a bump, `claude plugin update` keeps the old copy. Run it locally with `node scripts/ci/repo-checks.mjs main`.
+* **plan-progress:** its offline `.mjs` suite, which `claude plugin test` does not find.
+* **OpenCode and Codex packages:** `npm test` in `opencode/worktrunk` and the Codex capture tests.
+
 ## OpenCode Worktrunk
 
 The [OpenCode 2 Worktrunk package](opencode/worktrunk/README.md) delegates native
