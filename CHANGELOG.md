@@ -2,6 +2,12 @@
 
 All notable changes to the mods in this repository are recorded here. This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries are added when a mod's version is bumped. Other mods will get entries the next time they are bumped.
 
+## next-steps 1.1.1 (2026-11-19)
+
+### Added
+
+- Tests for the band: suggestions offered and filled, dismiss, no fork on short answers or subagent turns, the fork timeout, a late answer after a new turn, and cleaning of model output. The suggestion and dismiss buttons have stable keys so tests can press them.
+
 ## Review fixes (2026-11-19)
 
 Fixes from a review of every Claude mod in this repo. Copies of third-party mods are now marked patched in README.md.
