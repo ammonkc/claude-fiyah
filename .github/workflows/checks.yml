@@ -91,7 +91,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          # The module encodes terminal bar images with Uint8Array toBase64/fromBase64, which
+          # Claude Code's engine provides. Plain Node has them from 25 on; on 22 and 24, 48
+          # terminal cases throw "toBase64 is not a function".
+          node-version: 26
       # The .mjs suite drives the compiled hooks module through a stub engine. It is not
       # found by `claude plugin test`. The build goes to the runner's temp folder, not the repo.
       - name: Compile and run regress.mjs
