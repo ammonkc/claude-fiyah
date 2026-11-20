@@ -81,7 +81,7 @@ async function review($: EngineInterface, prompt: string, model: string): Promis
 }
 
 export const register: Register = (on, options) => {
-  const model = typeof options.model === 'string' && options.model !== '' ? options.model : 'claude-haiku-4-5-20251001'
+  const model = typeof options.model === 'string' && options.model !== '' ? options.model : 'haiku'
   const minChars = Number(options.minChars ?? 8)
   let enabled = options.enabled !== false
 

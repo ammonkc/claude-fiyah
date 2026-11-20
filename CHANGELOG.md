@@ -2,6 +2,12 @@
 
 All notable changes to the mods in this repository are recorded here. This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries are added when a mod's version is bumped. Other mods will get entries the next time they are bumped.
 
+## prompt-coach 0.1.3 (2026-11-19)
+
+### Fixed
+
+- The reviewer model defaults to the alias `haiku` instead of `claude-haiku-4-5-20251001`. The first-party id is rejected on Bedrock, so every review failed and prompts went through unreviewed.
+
 ## input-router 0.2.0 (2026-11-19)
 
 ### Changed

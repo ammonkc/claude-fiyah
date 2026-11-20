@@ -1,8 +1,11 @@
 {
   "name": "prompt-coach",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Before a vague prompt is sent, suggests a sharper rewrite; you choose: send improved, send yours, or edit the suggestion. Never rewrites silently.",
-  "author": { "name": "Michael Goldenberg", "url": "https://github.com/mishgoldenberg" },
+  "author": {
+    "name": "Michael Goldenberg",
+    "url": "https://github.com/mishgoldenberg"
+  },
   "userConfig": {
     "enabled": {
       "type": "boolean",
@@ -13,8 +16,8 @@
     "model": {
       "type": "string",
       "title": "Reviewer model",
-      "description": "A small fast model keeps the delay to about a second.",
-      "default": "claude-haiku-4-5-20251001"
+      "description": "A small fast model keeps the delay to about a second. Use an alias (haiku, sonnet, opus) so it resolves on Bedrock and other providers too.",
+      "default": "haiku"
     },
     "minChars": {
       "type": "number",
