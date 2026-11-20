@@ -28,7 +28,6 @@ function stub(on: On, env: Record<string, string> = {}, copied: string[] = []) {
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000, percent: 42 }, rateLimits: [] } }))
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: { command: 'skin' } }))
-  on('tool.register', () => ({ value: { tool: 'mcp__skins__design' } }))
   on('config.list', () => ({ value: [] }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('ui.render', () => STOCK)
@@ -129,15 +128,21 @@ test('a terminal that does not draw OSC 8 gets the URL as text', async ($, on) =
 
 test('files this turn created or edited take their colour in rows and prose, until the next turn', async ($, on) => {
   stub(on)
-  on('tool.call', ($, e) =>
-    e.tool === 'Write'
-      ? { result: { type: 'create', filePath: '/work/src/new.ts', content: 'x', structuredPatch: [], originalFile: null } }
-      : { result: { filePath: '/work/src/old.ts', structuredPatch: [], oldString: 'a', newString: 'b', originalFile: 'a', userModified: false, replaceAll: false } },
-  )
+  on('classic.PostToolUse', () => ({}) as never)
   await start($)
   await $.turn.start({ text: 'go', turnId: 't1' } as never)
-  await $.tool.call({ tool: 'Write', file_path: '/work/src/new.ts', content: 'x' })
-  await $.tool.call({ tool: 'Edit', file_path: '/work/src/old.ts', old_string: 'a', new_string: 'b' })
+  await $.classic.PostToolUse({
+    tool_name: 'Write',
+    tool_input: { file_path: '/work/src/new.ts', content: 'x' },
+    tool_response: { type: 'create', filePath: '/work/src/new.ts', content: 'x', structuredPatch: [], originalFile: null },
+    tool_use_id: 'w1',
+  } as never)
+  await $.classic.PostToolUse({
+    tool_name: 'Edit',
+    tool_input: { file_path: '/work/src/old.ts', old_string: 'a', new_string: 'b' },
+    tool_response: { filePath: '/work/src/old.ts', structuredPatch: [], oldString: 'a', newString: 'b', originalFile: 'a', userModified: false, replaceAll: false },
+    tool_use_id: 'e1',
+  } as never)
 
   const prose = await $.ui.mount(reply('Made src/new.ts and changed src/old.ts:4, left src/other.ts alone.'))
   const line = await prose.find({ type: 'Text', text: /Made/ })

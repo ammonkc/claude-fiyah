@@ -2,6 +2,15 @@
 
 All notable changes to the mods in this repository are recorded here. This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries are added when a mod's version is bumped. Other mods will get entries the next time they are bumped.
 
+## Review fixes (2026-11-19)
+
+Fixes from a review of every Claude mod in this repo. Copies of third-party mods are now marked patched in README.md.
+
+### skins 0.6.0 (patched copy)
+
+- Changed: per-call bookkeeping moved from a catch-all `tool.call` hook to classic PostToolUse, so skins no longer turns off backgrounding. Run time now excludes permission waits. The frame ticker runs only while a turn works, and per-call state is capped at 500 calls.
+- Removed: the daily update check and the star toast. The README update steps name the claude-fiyah marketplace.
+
 ## prompt-coach 0.1.3 (2026-11-19)
 
 ### Fixed

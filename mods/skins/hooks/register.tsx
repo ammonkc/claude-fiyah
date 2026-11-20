@@ -4,10 +4,9 @@ import type { EngineInterface, Register, RenderElement, RenderSurface, Timer } f
 import type { CustomSkin, Disclosure, Prefs, SkinSlot, SkinsMarkdownArgs, Touch, TurnStats, UsageSnap } from '../types'
 import { DEFAULT_PREFS, listing, nextTables, parsePrefs, runSkinCommand, TOGGLES, withCalm } from './command'
 import { buildCustom, resolveSkin, skinNames, withSlot } from './custom'
+import { DESIGN_TOOL, runDesign } from './designer'
 import { forTheme, gnomeDark, macDark, resolveLight, windowsDark } from './light'
 import { parseFolders, prefsFor, withFolder, withoutFolder } from './folders'
-import { DESIGN_TOOL, runDesign } from './designer'
-import type { DesignState } from './designer'
 import { clipLines, diffstat, pick } from './format'
 import { bodyOf, inputFields, isOpen } from './detail'
 import { disclosedRow, openedRows } from './detail-rows'
@@ -30,15 +29,10 @@ import { shortenPath } from './format'
 import { kindOf, summarize, toolLabel } from './tools'
 import { commandOf, errorLine, isQuiet, quietLabel } from './quiet'
 import { MAX_MARKDOWN, replySegments } from './reply'
-import { isDue, isNewer, LATEST_URL, STAR_NOTICE, starStep, updateNotice, versionOf } from './updates'
 import { hyperlinksFrom, touchOf } from './links'
-import type { Checked, Star } from './updates'
 
 const SETTINGS = 'skins-settings'
 const GALLERY = 'skins-gallery'
-const DESIGN = `mcp__skins__${DESIGN_TOOL.name}`
-const DESIGN_MATCH = /^mcp__skins__design$/
-const DESIGN_TOOL_WAIT_MS = 1000
 
 // A longer prompt keeps Claude Code's own drawing, which folds a big paste.
 const MAX_PROMPT = 4000
@@ -58,6 +52,10 @@ const STALE_AHEAD_MS = RETRY_MAX_MS + 1000
 const KEPT_TURNS = 40
 // How often an `auto` theme asks the system again: nothing tells a plugin it changed.
 const APPEARANCE_MS = 5000
+
+const DESIGN = `mcp__skins__${DESIGN_TOOL.name}`
+const DESIGN_MATCH = /^mcp__skins__design$/
+const DESIGN_TOOL_WAIT_MS = 1000
 
 const prefsAtom = atom({ plugin: 'skins', key: 'prefs' } as const, DEFAULT_PREFS)
 const customAtom = atom({ plugin: 'skins', key: 'custom' } as const, {})
@@ -331,6 +329,7 @@ async function firstDraws($: EngineInterface, e: { surface: RenderSurface; reque
 
 async function withSettle<T>($: EngineInterface, e: { surface: RenderSurface; requestId: string }, drawn: T): Promise<T> {
   if (settling.has(drawingOf(e))) {
+    wake($)
     await read($, settleAtom)
   }
 
@@ -538,54 +537,17 @@ async function tickCountdowns($: EngineInterface): Promise<void> {
   await update($, countdownsAtom, () => next)
 }
 
-// True when it showed the update notice, so the star ask can keep out of its way.
-async function checkForUpdate($: EngineInterface): Promise<boolean> {
-  const now = await $.clock.now()
+// What a change to the look carries: the prefs and the made skins.
+type LookState = { prefs: Prefs; custom: Record<string, CustomSkin> }
 
-  if (!isDue(await $.store.get('updateCheck'), now)) {
-    return false
-  }
-
-  // Stamped before the fetch, so an offline machine is not asked again every session.
-  await $.store.set('updateCheck', { at: now } satisfies Checked)
-
-  const current = versionOf(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`))
-  const response = await $.http.fetch(LATEST_URL)
-
-  if (!response.ok) {
-    throw new Error(`update check: ${LATEST_URL} answered ${response.status}`)
-  }
-
-  const latest = versionOf(response.text)
-
-  if (current !== undefined && latest !== undefined && isNewer(latest, current)) {
-    $.ui.toast(updateNotice(latest, current), { timeoutMs: 12_000 })
-    return true
-  }
-
-  return false
-}
-
-async function askForStar($: EngineInterface): Promise<void> {
-  const step = starStep(await $.store.get('star'), await $.clock.now())
-
-  if (step.save !== undefined) {
-    await $.store.set('star', step.save satisfies Star)
-  }
-
-  if (step.ask) {
-    $.ui.toast(STAR_NOTICE, { timeoutMs: 12_000 })
-  }
-}
-
-async function commit($: EngineInterface, state: DesignState): Promise<void> {
+async function commit($: EngineInterface, state: LookState): Promise<void> {
   await update($, customAtom, () => state.custom)
   await update($, prefsAtom, () => state.prefs)
   await $.store.set('custom', state.custom)
   await savePrefs($, state.prefs)
 }
 
-async function designState($: EngineInterface): Promise<DesignState> {
+async function designState($: EngineInterface): Promise<LookState> {
   return { prefs: await read($, prefsAtom), custom: await read($, customAtom) }
 }
 
@@ -613,6 +575,98 @@ async function drawMarkdown($: EngineInterface, args: SkinsMarkdownArgs): Promis
   return replyRows({ ...lookOf(ui, active, args.surface), links, isFirstDraw: () => false }, segments, Math.max(20, Math.floor(args.columns)), svg)
 }
 
+// Per-call facts (run time, shell command, quiet, prompt images) live in atoms keyed by the
+// call's id. Only the latest KEPT_CALLS ids keep theirs: an older row draws without its time
+// and, for a shell card, without its command header.
+const KEPT_CALLS = 500
+// A shell card's header is one truncated line; the rest of a long command is not kept.
+const MAX_COMMAND = 1000
+const recentCalls: string[] = []
+
+async function remember($: EngineInterface, id: string): Promise<void> {
+  if (recentCalls.includes(id)) {
+    return
+  }
+
+  recentCalls.push(id)
+
+  for (const old of recentCalls.splice(0, Math.max(0, recentCalls.length - KEPT_CALLS))) {
+    const at = { requestId: old }
+    await update($, memberOf(durationAtom, at), () => -1)
+    await update($, memberOf(commandAtom, at), () => '')
+    await update($, memberOf(quietAtom, at), () => false)
+    await update($, memberOf(imagesAtom, at), () => false)
+  }
+}
+
+type CallRecord = {
+  tool_name: string
+  tool_input: unknown
+  tool_response?: unknown
+  tool_use_id: string
+  duration_ms?: number
+}
+
+// What a finished call leaves for the rows and prose that come after it.
+async function recordCall($: EngineInterface, e: CallRecord, isOk: boolean): Promise<void> {
+  const at = { requestId: e.tool_use_id }
+  await remember($, e.tool_use_id)
+
+  // Its output card's header names the command, which the result does not carry.
+  if (SHELLS.has(e.tool_name)) {
+    await update($, memberOf(commandAtom, at), () => commandOf(e.tool_input).slice(0, MAX_COMMAND))
+  }
+
+  if (e.duration_ms !== undefined) {
+    const ms = e.duration_ms
+    await update($, memberOf(durationAtom, at), () => ms)
+  }
+
+  if (isQuiet(e.tool_name, e.tool_input)) {
+    await update($, memberOf(quietAtom, at), () => true)
+  }
+
+  // A file the call made or changed takes its colour in this turn's rows and prose.
+  const input = (typeof e.tool_input === 'object' && e.tool_input !== null ? e.tool_input : {}) as { file_path?: unknown; notebook_path?: unknown }
+  const file = input.file_path ?? input.notebook_path
+
+  if (isOk && WRITES.has(e.tool_name) && typeof file === 'string' && file !== '') {
+    const touch: Touch = (e.tool_response as { type?: unknown } | undefined)?.type === 'create' ? 'created' : 'edited'
+    hasTouched = true
+    await update($, touchedAtom, touched => (touched[file] === 'created' ? touched : { ...touched, [file]: touch }))
+  }
+}
+
+// The 90 ms ticker advances the spinner while a turn works and settles cards that finished
+// entering. It runs only then: wake starts it, and a tick with nothing to do stops it.
+let isWorking = false
+let ticker: Timer | undefined
+
+function stopTicker(): void {
+  ticker?.cancel()
+  ticker = undefined
+}
+
+function wake($: EngineInterface): void {
+  if (ticker !== undefined) {
+    return
+  }
+
+  ticker = $.clock.every(FRAME_MS, () => {
+    if (isWorking) {
+      void update($, frameAtom, frame => frame + 1)
+    }
+
+    if (settling.size > 0) {
+      void settleEntrances($)
+    }
+
+    if (!isWorking && settling.size === 0) {
+      stopTicker()
+    }
+  })
+}
+
 export const register: Register = on => {
   // Adds `$.skins` for other mods. A call is the `skins.markdown` event, which the hook
   // below answers with this session's `$`; the method itself is the chain's floor.
@@ -626,8 +680,6 @@ export const register: Register = on => {
 
   // What the turn on the main loop has done so far, for its footer.
   let stats: TurnStats = NO_STATS
-  let isWorking = false
-  let ticker: Timer | undefined
   let countdownTicker: Timer | undefined
   // The width the last reply was drawn at, shown by /skin list to tune table sizing.
   let lastColumns: number | undefined
@@ -639,6 +691,8 @@ export const register: Register = on => {
       argumentHint: '[help | gallery | copy | copy code | name | list | off | calm | pin | unpin | share | rail | tables | shimmer | band | countdown | clip | markdown | quiet | charts | math | commands | shell | highlight | hints | links | fold | expand | compact | icons | prompt | words]',
       immediate: true,
     })
+    // The agent's design tool. A deferred MCP tool, so only its name rides each request.
+    // Wait briefly for it to be listed, so the first turn can find it.
     const designTool = $.tool
       .register({
         name: DESIGN_TOOL.name,
@@ -660,28 +714,8 @@ export const register: Register = on => {
     await refreshUsage($)
     await followTheme($)
 
-    // Off the start's path: a slow or offline network must not hold the session up.
-    // The star ask waits a session when the update notice is showing; one toast at a time.
-    const logDebug = (error: unknown) => $.ui.log(error instanceof Error ? error.message : String(error), { to: 'debug' })
-    void checkForUpdate($)
-      .catch((error: unknown) => {
-        logDebug(error)
-        return false
-      })
-      .then(told => (told ? undefined : askForStar($)))
-      .catch(logDebug)
-
-    // Only the spinner reads the frame, so a tick redraws the spinner and nothing else.
-    ticker?.cancel()
-    ticker = $.clock.every(FRAME_MS, () => {
-      if (isWorking) {
-        void update($, frameAtom, frame => frame + 1)
-      }
-
-      if (settling.size > 0) {
-        void settleEntrances($)
-      }
-    })
+    // The frame ticker runs only while a turn works or a card settles (see wake).
+    stopTicker()
     countdownTicker?.cancel()
     countdownTicker = $.clock.every(COUNTDOWN_MS, () => {
       void tickCountdowns($).catch((error: unknown) => {
@@ -713,6 +747,7 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     stats = NO_STATS
     isWorking = true
+    wake($)
     // A worktree can move the session between turns.
     sessionCwd = await $.session.cwd()
     hasTouched = false
@@ -743,6 +778,7 @@ export const register: Register = on => {
     const hasImage = e.door === 'prompt' && e.message.content.some(block => block.type === 'image')
 
     if (hasImage && stored.uuid !== undefined) {
+      await remember($, stored.uuid)
       await update($, memberOf(imagesAtom, { requestId: stored.uuid }), () => true)
     }
 
@@ -773,36 +809,15 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // Times every call and counts the main loop's calls and changed lines.
-  on('tool.call', async ($, e, next) => {
-    // Its output card's header names the command, which the result does not carry.
-    if (SHELLS.has(e.tool)) {
-      const command = commandOf(e)
-      await update($, memberOf(commandAtom, { requestId: e.tool_use_id }), () => command)
-    }
+  // Times every call and counts the main loop's calls and changed lines. These are classic
+  // events and not `tool.call`: a tool.call or tool.run hook that may match every tool turns
+  // off its move to the background, its live output and Code Mode's wait. A PostToolUse
+  // hook has neither cost, and carries the call's input, record and run time.
+  on('classic.PostToolUse', async ($, e, next) => {
+    await recordCall($, e, true)
 
-    const startedAt = await $.clock.now()
-    const ran = await next(e)
-    const ms = (await $.clock.now()) - startedAt
-
-    await update($, memberOf(durationAtom, { requestId: e.tool_use_id }), () => ms)
-
-    // The call's arguments ride on the event itself (`e.command` for Bash).
-    if (isQuiet(e.tool, e)) {
-      await update($, memberOf(quietAtom, { requestId: e.tool_use_id }), () => true)
-    }
-
-    // A file the call made or changed takes its colour in this turn's rows and prose.
-    const file = (e as { file_path?: unknown; notebook_path?: unknown }).file_path ?? (e as { notebook_path?: unknown }).notebook_path
-
-    if (WRITES.has(e.tool) && ran.deny === undefined && typeof file === 'string' && file !== '') {
-      const touch: Touch = (ran.result as { type?: unknown } | undefined)?.type === 'create' ? 'created' : 'edited'
-      hasTouched = true
-      await update($, touchedAtom, touched => (touched[file] === 'created' ? touched : { ...touched, [file]: touch }))
-    }
-
-    if (e.agentId === undefined && e.tool !== DESIGN && ran.deny === undefined) {
-      const diff = diffstat(ran.result)
+    if (e.agent_id === undefined && e.tool_name !== DESIGN) {
+      const diff = diffstat(e.tool_response)
       stats = {
         tools: stats.tools + 1,
         added: stats.added + (diff?.added ?? 0),
@@ -810,9 +825,16 @@ export const register: Register = on => {
       }
     }
 
-    return ran
+    return next(e)
   })
 
+  on('classic.PostToolUseFailure', async ($, e, next) => {
+    await recordCall($, { ...e, tool_response: undefined }, false)
+
+    return next(e)
+  })
+
+  // The design tool answers itself; its exact matcher keeps every other tool's backgrounding.
   on('tool.call', { tool: DESIGN_MATCH }, async ($, e) => {
     const outcome = runDesign(e, await designState($))
 

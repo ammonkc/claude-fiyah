@@ -33,14 +33,14 @@ Looking for more mods? `/plugin install mod-store@hellosverre-mods`, then `/mods
 
 ## Update
 
-skins checks for a new release once a day and shows a toast when you are behind. To update:
+This copy is pinned in the claude-fiyah marketplace and makes no update check. To update it:
 
 ```bash
-claude plugin marketplace update hellosverre-mods
+claude plugin marketplace update claude-fiyah
 ```
 
 ```bash
-claude plugin update skins@hellosverre-mods
+claude plugin update skins@claude-fiyah
 ```
 
 Then restart Claude Code. Open sessions keep the version they started with.

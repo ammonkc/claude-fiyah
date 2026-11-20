@@ -143,13 +143,14 @@ test('the shell card puts its command on the surface band', async ($, on) => {
 test('PowerShell gets the shell card and the clip as Bash does', async ($, on) => {
   const seen: unknown[] = []
   stubEngine(on, seen)
-  const ids: string[] = []
-  on('tool.call', ($, e) => {
-    ids.push(e.tool_use_id)
-    return { result: { stdout: '', stderr: '', interrupted: false } }
-  })
-  await $.tool.call({ tool: 'PowerShell' as 'Bash', command: 'Get-Date' })
-  const [id = ''] = ids
+  on('classic.PostToolUse', () => ({}) as never)
+  const id = 'ps1'
+  await $.classic.PostToolUse({
+    tool_name: 'PowerShell',
+    tool_input: { command: 'Get-Date' },
+    tool_response: { stdout: '', stderr: '', interrupted: false },
+    tool_use_id: id,
+  } as never)
 
   const card = await $.ui.mount(toolResult(id, 'PowerShell', { stdout: 'Friday', stderr: '', interrupted: false }))
   expect(await card.find({ type: 'Text', text: '$ Get-Date' })).toBeDefined()
