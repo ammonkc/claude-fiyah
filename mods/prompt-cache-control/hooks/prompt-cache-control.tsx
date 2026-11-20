@@ -32,6 +32,15 @@
  *   band: boolean               row above the prompt (default true)
  *   status: boolean             entry under the prompt (default false)
  *   toast: boolean              toasts near expiry: at warnSeconds, then 10, 3, 2 and 1 s (default true)
+ *   keepWarm: boolean           ping the cache shortly before it lapses (default false)
+ *   keepWarmMax: number         pings per idle stretch (default 3)
+ *   keepWarmSeconds: number     seconds left at which the ping is sent (default 30)
+ *
+ * The keep warm ping is `$.model.fork` asked for one word: the fork reads the
+ * conversation's cache (about 0.1x a rewrite) and renews it. It runs only for
+ * prompts of 20k tokens or more and under compactAtTokens, and renews the
+ * countdown only when its own usage shows a cache read. The band also offers a
+ * "Keep warm" button, inside the warning window, whenever a ping would pay off.
  */
 import type { EngineInterface, Register } from 'claude-code'
 import {
@@ -51,11 +60,13 @@ import {
   lifeColor,
   lifeRatio,
   nextToastMark,
+  pingDecision,
   positive,
   promptTokens,
   remainingMs,
   rowRatio,
   segments,
+  shouldAutoPing,
 } from './cache.ts'
 import type { Account, Advice, CacheEnv, Sample, Ttl } from './cache.ts'
 
@@ -82,11 +93,23 @@ let lastKey = ''
 let toastedFor = 0
 let toastLevel = Infinity
 let isPaneOpen = false
+// keep-warm: pings sent since the last real request, whether one is in flight, whether the stretch stopped pinging
+// (a failed ping or one that missed the cache is not retried), and when the last ping that really read the cache began
+let pingsThisStretch = 0
+let pinging = false
+let pingBlocked = false
+let refreshedAt = 0
 
-type Policy = { warnMs: number; compactAtTokens: number }
+// one word back keeps the output to a few tokens; the fork sees (and so reads the cache of) the whole conversation
+const PING_PROMPT = 'Reply with the single word: ok'
+
+type Policy = { warnMs: number; compactAtTokens: number; keepWarm: boolean; pingMax: number; pingMarginMs: number }
+
+// a ping that read the cache renewed the entry as a request would: count the lifetime from it
+const renewed = (s: Sample | undefined): Sample | undefined => (s && refreshedAt > s.startedAt ? { ...s, startedAt: refreshedAt } : s)
 
 function current(policy: Policy, now: number) {
-  const last = samples[samples.length - 1]
+  const last = renewed(samples[samples.length - 1])
   const prev = samples[samples.length - 2]
   const disabled = last ? isCachingDisabled(last.model, env) : isCachingDisabled('', env)
   const advice: Advice = advise(last, prev, { ttl, ...policy }, now, disabled, env)
@@ -154,10 +177,65 @@ function tick($: EngineInterface, policy: Policy, show: Show) {
       $.ui.toast(`cache expires in ${secs >= 60 ? fmtClock(left) : `${secs}s`}: ${tail}`)
     }
   }
+  if (policy.keepWarm && !pinging && !pingBlocked && shouldAutoPing(last, ttl, now, pingsThisStretch, limitsOf(policy), policy.pingMarginMs)) {
+    void ping($, policy, show)
+  }
   if (!last || left <= 0) {
     timer?.cancel()
     timer = undefined
   }
+}
+
+const limitsOf = (policy: Policy) => ({ compactAtTokens: policy.compactAtTokens, max: policy.pingMax })
+
+// Whether a ping may start now, for the timer and the button alike.
+const canPing = (policy: Policy, now: number) =>
+  !pinging && !pingBlocked && pingDecision(renewed(samples[samples.length - 1]), ttl, now, pingsThisStretch, limitsOf(policy)).eligible
+
+/**
+ * One keep-warm ping: a fork of the conversation asked for a single word. It
+ * counts against the stretch's limit whatever happens, and a failure or a miss
+ * stops further pings until a real request (a fork whose prefix does not match
+ * the main loop's writes its own entry and refreshes nothing, so retrying
+ * would only spend). Only a reply that read the cache renews the countdown.
+ */
+async function ping($: EngineInterface, policy: Policy, show: Show): Promise<void> {
+  if (pinging) return
+  pinging = true
+  pingsThisStretch += 1
+  const startedAt = Date.now()
+  const before = samples[samples.length - 1]
+  const size = before ? promptTokens(before) : 0
+  $.ui.invalidate('ui.render')
+  try {
+    const reply = await $.model.fork({ prompt: PING_PROMPT })
+    if (!reply.isAnswered) {
+      pingBlocked = true
+      $.ui.log(`prompt-cache-control: keep-warm ping not answered (${reply.reason})`, { to: 'debug' })
+    } else if (reply.usage.cache_read_input_tokens > 0) {
+      refreshedAt = startedAt
+      $.ui.log(`prompt-cache-control: keep-warm ping read ${fmtTokens(reply.usage.cache_read_input_tokens)} of ${fmtTokens(size)} cached tokens`, { to: 'debug' })
+    } else {
+      pingBlocked = true
+      $.ui.log('prompt-cache-control: keep-warm ping did not read the cache, so it refreshed nothing; pings stop until your next message', { to: 'debug' })
+      if (show.toast) $.ui.toast('keep-warm ping missed the cache: it refreshed nothing')
+    }
+  } catch (error) {
+    pingBlocked = true
+    $.ui.log(`prompt-cache-control: keep-warm ping failed: ${error instanceof Error ? error.message : error}`, { to: 'debug' })
+  } finally {
+    pinging = false
+    lastKey = ''
+    arm($, policy, show)
+    tick($, policy, show)
+  }
+}
+
+// a real request starts a new idle stretch; a new conversation has no entry to renew
+function resetPings(everything = false) {
+  pingsThisStretch = 0
+  pingBlocked = false
+  if (everything) refreshedAt = 0
 }
 
 function arm($: EngineInterface, policy: Policy, show: Show) {
@@ -168,6 +246,9 @@ export const register: Register = (on, options) => {
   const policy: Policy = {
     warnMs: positive(options.warnSeconds, 60) * 1000,
     compactAtTokens: positive(options.compactAtTokens, 100_000),
+    keepWarm: options.keepWarm === true,
+    pingMax: positive(options.keepWarmMax, 3),
+    pingMarginMs: positive(options.keepWarmSeconds, 30) * 1000,
   }
   const showBand = options.band !== false
   const showStatus = options.status === true
@@ -179,6 +260,7 @@ export const register: Register = (on, options) => {
     lastKey = ''
     toastedFor = 0
     hasNoWindows = false
+    resetPings(true)
     const none = () => undefined
     env = {
       enable1h: await $.env.get('ENABLE_PROMPT_CACHING_1H').catch(none),
@@ -223,6 +305,7 @@ export const register: Register = (on, options) => {
       samples = []
       lastKey = ''
       toastedFor = 0
+      resetPings(true)
       observed = undefined
       ttl = baseTtl
       ttlSource = envSource
@@ -251,6 +334,7 @@ export const register: Register = (on, options) => {
         output: r.usage.output_tokens,
       })
       if (samples.length > KEEP) samples = samples.slice(-KEEP)
+      resetPings()
       if (!pinned) {
         // the account can change under a session: a subscription running out of plan usage moves to usage credits;
         // once a response came with no plan windows there is nothing to watch, so the call is not made again
@@ -310,9 +394,12 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (!showBand || e.props.hasSurvey || isPaneOpen) return next(e)
-    const { last, advice, left } = current(policy, Date.now())
+    const now = Date.now()
+    const { last, advice, left } = current(policy, now)
     if (!last && advice.kind !== 'off') return next(e)
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    // the manual ping shows only while it would pay off and the cache is inside the warning window
+    const offerPing = left > 0 && left <= policy.warnMs && (pinging || canPing(policy, now))
     const columns = e.viewport?.columns ?? 100
     const color = COLOR[advice.kind]
     // The band is one instance: whatever the plugins beneath draw (another mod's band) stays, under this line.
@@ -345,6 +432,13 @@ export const register: Register = (on, options) => {
         )}
         {advice.kind !== 'uncached' && advice.kind !== 'off' && (
           <Text bold color={left > 0 ? lifeColor(left, ttl, policy.warnMs) : 'red'}>{left > 0 ? `⏱ ${fmtClock(left)}` : '⏱ 0:00'}</Text>
+        )}
+        {offerPing && (
+          <Button
+            key="ping"
+            label={pinging ? 'Pinging…' : 'Keep warm'}
+            onPress={() => (pinging ? undefined : ping($, policy, { status: showStatus, toast: wantToast }))}
+          />
         )}
         <Text dimColor wrap="truncate-end">{`${ttl} · ${advice.text}`}</Text>
       </Box>,

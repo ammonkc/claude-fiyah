@@ -1,5 +1,5 @@
 {
-  "description": "prompt-cache-control: turn.step reads each request's cache usage; a one-second clock.every drives the countdown; ui.render draws the AbovePrompt band and the /cache pane",
+  "description": "prompt-cache-control: turn.step reads each request's cache usage; a one-second clock.every drives the countdown; ui.render draws the AbovePrompt band and the /cache pane; a keep-warm ping (a one-word model.fork shortly before expiry) runs only when keepWarm is on or its button is pressed",
   "modules": [
     "./prompt-cache-control.tsx"
   ]

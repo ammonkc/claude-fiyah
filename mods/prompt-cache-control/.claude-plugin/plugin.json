@@ -1,6 +1,6 @@
 {
   "name": "prompt-cache-control",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Prompt-cache meter above the Claude Code prompt: how many tokens each request read from, wrote to and sent past the cache, a live countdown to the cache's expiry, and what to do about it (keep going, compact or clear). The TTL follows Claude Code's own rules for your account (1 hour on a Claude subscription, 5 minutes on an API key, cloud provider or usage credits, plus the TTL variables and setting) and corrects itself from request timing. /cache opens a per-turn table.",
   "author": {
     "name": "claude-code-templates",
@@ -56,6 +56,24 @@
       "title": "Toast near expiry",
       "description": "Toasts as the cache lapses: at the warning threshold, then at 10, 3, 2 and 1 seconds, once per cache entry each (only for prompts of 20k tokens or more)",
       "default": true
+    },
+    "keepWarm": {
+      "type": "boolean",
+      "title": "Keep the cache warm",
+      "description": "Send a tiny keep-warm ping (a fork of the conversation asked for one word) shortly before the cache lapses, so an idle session does not pay to rewrite it. Each ping bills a cache read of the whole prompt, about a tenth of a rewrite. Only for prompts of 20k tokens or more and under compactAtTokens. Off by default",
+      "default": false
+    },
+    "keepWarmMax": {
+      "type": "number",
+      "title": "Max pings per idle stretch",
+      "description": "Pings allowed after a request before the cache is left to lapse; your next message starts a new stretch",
+      "default": 3
+    },
+    "keepWarmSeconds": {
+      "type": "number",
+      "title": "Ping margin (s)",
+      "description": "Seconds left on the countdown at which a keep-warm ping is sent",
+      "default": 30
     }
   }
 }

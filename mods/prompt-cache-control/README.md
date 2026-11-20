@@ -50,9 +50,20 @@ Other switches read from the environment at session start:
 | --- | --- |
 | `DISABLE_PROMPT_CACHING=1` (and `_HAIKU`, `_SONNET`, `_OPUS`) | the band says caching is off for that model |
 
+## Keeping the cache warm
+
+An idle session lets the cache lapse, and the next message then rewrites the whole prompt (1.25x base input for 5 minutes, 2x for 1 hour). A **keep warm ping** is a tiny request that reads the cache instead (about 0.1x), which renews the lifetime. The mod sends it with `$.model.fork`: a fork of the conversation that is asked for one word, so it adds nothing to your transcript and costs a few output tokens.
+
+- **Button.** Inside the warning window the band shows a `Keep warm` button, but only when a ping would pay off: the cache is still alive, the prompt is 20k tokens or more, it is under `compactAtTokens` (past that, `/compact` is the better move) and the stretch has pings left. Press it to ping once.
+- **Automatic.** Set `keepWarm: true` and the mod pings by itself when `keepWarmSeconds` (30 by default) are left. It stops after `keepWarmMax` pings (3 by default) until your next message starts a new stretch, so a session you walked away from is not kept warm forever.
+- **Verified, not assumed.** A ping renews the countdown only when its own usage shows it read the cache. If the fork missed (its prefix did not match the main conversation) or failed, nothing is renewed, the countdown stays honest, pings stop until your next message, and a toast says so. Pings count towards the limit whatever happens.
+
+A ping only saves money if you come back before the renewed cache lapses. On a 5 minute cache one ping costs about a tenth of a rewrite, so it pays for itself if there is better than roughly a 1 in 10 chance you return in time. It is off by default for that reason.
+
 ## What it hooks
 
 - `turn.step`: reads each main-loop request's usage (subagents have their own prefixes and are left out)
+- `$.model.fork`: the keep warm ping, only when you press the button or turn `keepWarm` on
 - `$.clock.every(1000)`: redraws the countdown, and only while its text changes, so an idle expired session costs nothing
 - `ui.render` on `AbovePrompt` (the band) and on `Pane` (`/cache`)
 - `$.ui.toast`: once per cache entry at the warning threshold (60 s by default) and again at 10, 3, 2 and 1 seconds left, for prompts of 20k tokens or more
@@ -66,6 +77,9 @@ Other switches read from the environment at session start:
   band: boolean             row above the prompt (default true)
   status: boolean           entry under the prompt, "cache 98% · 3:41" (default false)
   toast: boolean            toasts at the threshold, 10, 3, 2 and 1 s (default true)
+  keepWarm: boolean         ping the cache shortly before it lapses (default false; the button works either way)
+  keepWarmMax: number       pings per idle stretch (default 3)
+  keepWarmSeconds: number   seconds left at which the ping is sent (default 30)
 ```
 
 The 100k `compactAtTokens` is a judgement, not a figure from the documentation: lower it if your model's cache writes are expensive for you.

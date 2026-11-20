@@ -171,6 +171,38 @@ export function remainingMs(s: Sample, ttl: Ttl, now: number): number {
   return Math.max(0, expiresAt(s, ttl) - now)
 }
 
+/** Below this a lapsed cache costs too little to be worth a ping (or a toast). */
+export const PING_MIN_TOKENS = 20_000
+
+export type PingLimits = {
+  /** from this prompt size up, /compact beats keeping the cache warm */
+  compactAtTokens: number
+  /** pings allowed per idle stretch (reset by a real request) */
+  max: number
+}
+
+/**
+ * Whether a keep-warm ping would pay off now: the cache is still alive (a
+ * lapsed one is rebuilt by the next message, a ping cannot revive it), the
+ * prompt is big enough to matter, small enough that /compact is not the better
+ * move, and the idle stretch has pings left. A read costs about a tenth of the
+ * write it saves the next message.
+ */
+export function pingDecision(last: Sample | undefined, ttl: Ttl, now: number, sent: number, limits: PingLimits): { eligible: boolean; reason: string } {
+  if (!last) return { eligible: false, reason: 'no request yet' }
+  if (remainingMs(last, ttl, now) <= 0) return { eligible: false, reason: 'the cache has lapsed' }
+  const size = promptTokens(last)
+  if (size < PING_MIN_TOKENS) return { eligible: false, reason: `prompt under ${fmtTokens(PING_MIN_TOKENS)} tokens` }
+  if (size >= limits.compactAtTokens) return { eligible: false, reason: 'prompt past the compact threshold' }
+  if (sent >= limits.max) return { eligible: false, reason: 'ping limit reached for this idle stretch' }
+  return { eligible: true, reason: '' }
+}
+
+/** A ping is due: it would pay off and the cache is within `marginMs` of lapsing. */
+export function shouldAutoPing(last: Sample | undefined, ttl: Ttl, now: number, sent: number, limits: PingLimits, marginMs: number): boolean {
+  return pingDecision(last, ttl, now, sent, limits).eligible && !!last && remainingMs(last, ttl, now) <= marginMs
+}
+
 /**
  * Why a request that should have read the cache wrote it instead; undefined
  * when it did not miss. A prompt that shrank is a /compact or /clear, not a

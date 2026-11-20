@@ -17,8 +17,10 @@ import {
   modelFamily,
   shortModel,
   missReason,
+  pingDecision,
   remainingMs,
   resolveTtl,
+  shouldAutoPing,
 } from '../hooks/cache.ts'
 import type { Policy, Sample } from '../hooks/cache.ts'
 import type { Engine } from 'claude-code/testing'
@@ -315,6 +317,136 @@ describe('the band', () => {
   })
 })
 
+describe('keep-warm ping', () => {
+  const limits = { compactAtTokens: 100_000, max: 3 }
+  const MIN = 60_000
+  const big = sample({ read: 50_000, write: 1_000, fresh: 500 }) // 51.5k prompt, started at T0
+  // 5m cache: 4:30 in leaves 30 s
+  const nearEnd = T0 + 4.5 * MIN
+
+  test('is eligible while the cache is alive, big enough, under the compact threshold and under the limit', () => {
+    expect(pingDecision(big, '5m', T0 + MIN, 0, limits)).toEqual({ eligible: true, reason: '' })
+  })
+
+  test('each guard says why it refuses', () => {
+    expect(pingDecision(undefined, '5m', T0, 0, limits).eligible).toBe(false)
+    expect(pingDecision(big, '5m', T0 + 5 * MIN, 0, limits).reason).toBe('the cache has lapsed')
+    expect(pingDecision(sample({ read: 10_000, write: 500, fresh: 100 }), '5m', T0 + MIN, 0, limits).reason).toMatch(/under 20k/)
+    expect(pingDecision(sample({ read: 99_000, write: 1_000, fresh: 500 }), '5m', T0 + MIN, 0, limits).reason).toMatch(/compact/)
+    expect(pingDecision(big, '5m', T0 + MIN, 3, limits).reason).toMatch(/limit/)
+    // a request that touched no cache has nothing to keep warm
+    expect(pingDecision(sample({ read: 0, write: 0, fresh: 50_000 }), '5m', T0 + MIN, 0, limits).eligible).toBe(false)
+  })
+
+  test('the auto ping waits for the margin, then fires, and never past the limit', () => {
+    expect(shouldAutoPing(big, '5m', T0 + 4 * MIN, 0, limits, 30_000)).toBe(false)
+    expect(shouldAutoPing(big, '5m', nearEnd, 0, limits, 30_000)).toBe(true)
+    expect(shouldAutoPing(big, '5m', nearEnd, 3, limits, 30_000)).toBe(false)
+    // the same moment on a 1h cache is far from expiry
+    expect(shouldAutoPing(big, '1h', nearEnd, 0, limits, 30_000)).toBe(false)
+    expect(shouldAutoPing(big, '1h', T0 + 59.5 * MIN, 0, limits, 30_000)).toBe(true)
+  })
+})
+// The ping forks the conversation; the reply says whether the fork read the cache.
+type ForkReply = 'hit' | 'miss' | 'unanswered'
+function fakeFork(on: On, reply: ForkReply) {
+  const prompts: string[] = []
+  const usage = (read: number) => ({ input_tokens: 5, output_tokens: 2, cache_read_input_tokens: read, cache_creation_input_tokens: read === 0 ? 81_000 : 0 })
+  on('model.fork', (_$, e) => {
+    prompts.push(e.prompt)
+    if (reply === 'unanswered') return { value: { isAnswered: false as const, reason: 'nothing-to-fork' as const } }
+    return { value: { isAnswered: true as const, text: 'ok', usage: usage(reply === 'hit' ? 81_000 : 0) } }
+  })
+  return prompts
+}
+
+// warnSeconds and keepWarmSeconds above the 5m lifetime put the fresh cache inside both windows at once
+const NEAR = { warnSeconds: 400, keepWarmSeconds: 400 }
+const READY = { cwd: '/repo', surface: 'terminal', isInteractive: true } as never
+
+describe('keep-warm ping, end to end', () => {
+  test('is off by default: a cache inside the margin is left alone', { options: NEAR }, async ($, on) => {
+    fakeEngine(on, {}, { status: [], logs: [] })
+    const forks = fakeFork(on, 'hit')
+    await $.session.start(READY)
+    await step($)
+    expect(forks).toEqual([])
+  })
+
+  test('on, it pings inside the margin, at most keepWarmMax times, until the next real request', { options: { ...NEAR, keepWarm: true, keepWarmMax: 2 } }, async ($, on) => {
+    const calls: Calls = { status: [], logs: [] }
+    fakeEngine(on, {}, calls)
+    const forks = fakeFork(on, 'hit')
+    await $.session.start(READY)
+    await step($)
+    await new Promise(r => setTimeout(r, 20))
+    expect(forks).toHaveLength(2)
+    expect(forks[0]).toMatch(/single word/)
+    expect(calls.logs.some(l => /ping read 81k of 81\.3k/.test(l))).toBe(true)
+    // a real request starts a new stretch
+    await step($)
+    await new Promise(r => setTimeout(r, 20))
+    expect(forks).toHaveLength(4)
+  })
+
+  test('a ping that missed the cache refreshed nothing: it says so and is not retried', { options: { ...NEAR, keepWarm: true } }, async ($, on) => {
+    const calls: Calls = { status: [], logs: [] }
+    fakeEngine(on, {}, calls)
+    const forks = fakeFork(on, 'miss')
+    await $.session.start(READY)
+    await step($)
+    await new Promise(r => setTimeout(r, 20))
+    expect(forks).toHaveLength(1)
+    expect(calls.logs.some(l => /did not read the cache/.test(l))).toBe(true)
+    // the countdown was not extended and the button is gone
+    const ui = await band($)
+    expect(await ui.find({ key: 'ping' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a fork that cannot answer is logged and not retried', { options: { ...NEAR, keepWarm: true } }, async ($, on) => {
+    const calls: Calls = { status: [], logs: [] }
+    fakeEngine(on, {}, calls)
+    const forks = fakeFork(on, 'unanswered')
+    await $.session.start(READY)
+    await step($)
+    await new Promise(r => setTimeout(r, 20))
+    expect(forks).toHaveLength(1)
+    expect(calls.logs.some(l => /ping not answered \(nothing-to-fork\)/.test(l))).toBe(true)
+  })
+
+  test('the Keep warm button is manual: it shows inside the warning window even with keepWarm off, and a press forks once', { options: { warnSeconds: 400 } }, async ($, on) => {
+    fakeEngine(on, {}, { status: [], logs: [] })
+    const forks = fakeFork(on, 'hit')
+    await $.session.start(READY)
+    await step($)
+    const ui = await band($)
+    expect(forks).toEqual([])
+    await ui.press({ key: 'ping' })
+    expect(forks).toHaveLength(1)
+    await ui.unmount()
+  })
+
+  test('the button is hidden while the cache is outside the warning window', async ($, on) => {
+    fakeEngine(on, {}, { status: [], logs: [] })
+    fakeFork(on, 'hit')
+    await $.session.start(READY)
+    await step($)
+    const ui = await band($)
+    expect(await ui.find({ key: 'ping' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('the button is hidden when a ping would not pay: a prompt under 20k tokens', { options: { warnSeconds: 400 } }, async ($, on) => {
+    fakeEngine(on, {}, { status: [], logs: [] }, { read: 5_000, write: 500 })
+    fakeFork(on, 'hit')
+    await $.session.start(READY)
+    await step($)
+    const ui = await band($)
+    expect(await ui.find({ key: 'ping' })).toBeUndefined()
+    await ui.unmount()
+  })
+})
 describe('pane helpers', () => {
   test('the countdown is green, then yellow below 40%, then red from the warning threshold', () => {
     expect(lifeColor(250_000, '5m', 60_000)).toBe('green')

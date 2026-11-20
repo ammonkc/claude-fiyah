@@ -93,7 +93,7 @@ Copies run the same code as upstream, so the protection comes from the audit and
 | prompt-coach | 0.1.4 (patched) | mishgoldenberg/claude-mods | none |
 | prompt-drafts | 0.2.0 (patched) | vynnlee/mods | none in repo; plugin.json says MIT |
 | reflect-mod | 3.4.0 (patched) | bayramannakov/claude-reflect | none in repo; plugin.json says MIT |
-| prompt-cache-control | 0.2.0 (patched) | davila7/claude-code-templates | none in repo; plugin.json says MIT |
+| prompt-cache-control | 0.3.0 (patched) | davila7/claude-code-templates | none in repo; plugin.json says MIT |
 | filetree | 0.5.3 (patched) | data-goblin/claude-code-filetree | MIT (LICENSE) |
 | flightdeck | 0.5.2 (patched) | scasella/claude-flightdeck | MIT (LICENSE) |
 | skins | 0.6.0 (patched) | hellosverre/claude-skins | MIT (LICENSE) |
@@ -106,7 +106,7 @@ Audited 2026-10-28. Findings that matter when you review an update:
 - **skins**: the upstream update check (a daily fetch of `plugin.json` from `main`) and the star toast are removed in this copy, so it makes no network calls. `hooks/vendor/mermaid-ascii.js` was rebuilt from `scripts/vendor` and matches the shipped bundle byte for byte.
 - **filetree**: runs `git`, `find`, `du`, `tmux` and similar through argv arrays. The "Open with" and "Diff with" settings are run as commands, by design, from the user's own config.
 - **reflect-mod**: sends short prompts to a model for review, and writes `CLAUDE.md` when you press save.
-- **prompt-cache-control**: reads `settings.json` files (read only) for the cache lifetime setting.
+- **prompt-cache-control**: reads `settings.json` files (read only) for the cache lifetime setting. When `keepWarm` is on, or you press its button, it makes a small model call (a fork of the conversation asked for one word) that bills a cache read.
 - **notify**: runs `osascript`, `powershell` or `notify-send` with arguments that have quotes and shell characters stripped.
 - **flightdeck**: no network, process or filesystem access.
 - **prompt-coach**: the reviewer model default is the alias `haiku` instead of the first-party id `claude-haiku-4-5-20251001`, which Bedrock rejects.

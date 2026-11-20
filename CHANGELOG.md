@@ -2,6 +2,12 @@
 
 All notable changes to the mods in this repository are recorded here. This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries are added when a mod's version is bumped. Other mods will get entries the next time they are bumped.
 
+## prompt-cache-control 0.3.0 (2026-11-20)
+
+### Added
+
+- Keep warm ping: a one word `$.model.fork` that reads the conversation's cache and renews it before it lapses. A `Keep warm` button appears in the band inside the warning window, only when a ping would pay off (cache alive, prompt of 20k tokens or more, under `compactAtTokens`, pings left). `keepWarm` (off by default) sends it automatically `keepWarmSeconds` before expiry, at most `keepWarmMax` times per idle stretch. The countdown is renewed only when the ping's own usage shows a cache read; a miss or failure stops pings until the next message.
+
 ## next-steps 1.1.1 (2026-11-19)
 
 ### Added
