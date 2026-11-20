@@ -47,6 +47,28 @@ Notes: commits made from the band skip repo git hooks, and review output is show
 claude plugin install git-actions@claude-fiyah
 ```
 
+## Guardrail mods
+
+Five mods that keep cost, context and model choice in check. They are hand ports of third-party mods, rewritten for this setup rather than copied: models are called by alias (`haiku`, `sonnet`, `opus`) so they resolve to Bedrock inference profiles, nothing installs remote code, and logs hold decisions and sizes only. Each mod's README lists what changed from upstream and links the pinned upstream commit.
+
+| Mod | What it does | Ported from |
+|---|---|---|
+| [handoff](mods/handoff/README.md) | `/handoff [focus]` writes a six section handoff note to `~/.claude/handoffs/<project>/`, copies it and shows it in a pane. `/handoff resume` fills the prompt with the newest note. | Plagemes/claude-mods (MIT) |
+| [handoff-nudge](mods/handoff-nudge/README.md) | A band above the prompt once context passes 60% of the window. It fills `/handoff <focus>` for the handoff mod and follows its progress. | thitiwats/claude-mods (MIT) |
+| [model-router](mods/model-router/README.md) | A Haiku judge picks each subagent's model at spawn. An explicit model is never overridden, and inference profile ARNs are mapped to tiers. | michaelzwiener/claude-mods, from davila7/claude-code-templates (MIT) |
+| [effort-optimizer](mods/effort-optimizer/README.md) | Suggests a reasoning effort level for the main chat in a band. Apply holds it for this chat only and never changes the saved setting. | michaelzwiener/claude-mods (no license in repo) |
+| [input-router](mods/input-router/README.md) | Replaces oversized MCP results and long PDFs with Haiku notes, keeping the raw output on disk. Read and Bash are left to context-mode. | michaelzwiener/claude-mods (no license in repo) |
+
+model-router cannot change a subagent's model while `CLAUDE_CODE_SUBAGENT_MODEL` is set, because a session wide subagent model outranks any hook. `/model-router` warns when that is the case.
+
+```
+claude plugin install handoff@claude-fiyah
+claude plugin install handoff-nudge@claude-fiyah
+claude plugin install model-router@claude-fiyah
+claude plugin install effort-optimizer@claude-fiyah
+claude plugin install input-router@claude-fiyah
+```
+
 ## Third-party mods
 
 The mods below are verbatim copies of third-party Claude Code mods, pinned here so an upstream update cannot reach this setup on its own. Each copy has been audited (read-only review of its hooks, skills, scripts and manifest for network calls, process execution, filesystem and credential access, dynamic code and obfuscation). Only code, LICENSE, README, tests and manifests were copied. Media, upstream CI, git hooks and marketing assets were dropped. To pull an upstream change, diff against the upstream repo at the version listed, re-audit, and copy again.

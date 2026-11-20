@@ -1,0 +1,54 @@
+{
+  "name": "model-router",
+  "version": "0.1.0",
+  "description": "Picks the model of each subagent. At agent.spawn Haiku reads the task and answers with a tier and a confidence; the model moves only when the confidence clears the bar for that direction (low to spend more, high to spend less). A model the caller named is never changed. Understands Bedrock inference profile ARNs through the ANTHROPIC_DEFAULT_*_MODEL variables. /model-router shows the last picks.",
+  "author": { "name": "ammonkc" },
+  "repository": "https://github.com/ammonkc/claude-fiyah",
+  "license": "MIT",
+  "keywords": ["mod", "function-hooks", "productivity", "routing", "models", "bedrock"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Route subagent models",
+      "description": "Pick the model of each subagent at agent.spawn. Off leaves every spawn as it is",
+      "default": true
+    },
+    "fastModel": {
+      "type": "string",
+      "title": "Fast tier",
+      "description": "Model alias or id for mechanical, local tasks. An alias is resolved by Claude Code (on Bedrock, to the ANTHROPIC_DEFAULT_HAIKU_MODEL profile)",
+      "default": "haiku"
+    },
+    "balancedModel": {
+      "type": "string",
+      "title": "Balanced tier",
+      "description": "Model alias or id for ordinary engineering work",
+      "default": "sonnet"
+    },
+    "deepModel": {
+      "type": "string",
+      "title": "Deep tier",
+      "description": "Model alias or id for hard or high-stakes work",
+      "default": "opus"
+    },
+    "minUpgradeConfidence": {
+      "type": "number",
+      "title": "Confidence to spend more",
+      "description": "How sure Haiku must be to move a subagent to a bigger model. A wrong upgrade only costs money, so the bar is low",
+      "default": 0.3
+    },
+    "minDowngradeConfidence": {
+      "type": "number",
+      "title": "Confidence to spend less",
+      "description": "How sure Haiku must be to move a subagent to a smaller model. Also the bar for any move from a model whose tier is unknown. A missing confidence never moves anything",
+      "default": 0.6
+    },
+    "timeoutMs": {
+      "type": "number",
+      "title": "Judge time limit (ms)",
+      "description": "How long to wait for Haiku's answer before the spawn goes through unchanged",
+      "default": 5000
+    }
+  }
+}

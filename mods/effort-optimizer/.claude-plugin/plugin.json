@@ -1,0 +1,31 @@
+{
+  "name": "effort-optimizer",
+  "version": "0.1.0",
+  "description": "Judges each prompt with Haiku and suggests a better effort level in a band above the prompt (Apply or Dismiss). Apply overrides the effort of the main chat's requests without touching your saved effort setting. Never blocks a turn and never touches subagents.",
+  "author": { "name": "ammonkc" },
+  "license": "MIT",
+  "repository": "https://github.com/ammonkc/claude-fiyah",
+  "keywords": ["mod", "function-hooks", "effort", "prompt-caching", "guardrail"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "minConfidence": {
+      "type": "number",
+      "title": "Minimum confidence",
+      "description": "Only suggest a level when the judge is at least this sure (0 to 1).",
+      "default": 0.6
+    },
+    "cooldownTurns": {
+      "type": "number",
+      "title": "Cooldown (prompts)",
+      "description": "After a suggestion, judge nothing for this many prompts.",
+      "default": 3
+    },
+    "mode": {
+      "type": "string",
+      "title": "Default mode",
+      "description": "suggest shows a band with Apply and Dismiss, auto applies the level without asking, off does nothing. /effort-optimizer changes it for you.",
+      "default": "suggest",
+      "options": ["suggest", "auto", "off"]
+    }
+  }
+}

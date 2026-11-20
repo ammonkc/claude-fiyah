@@ -1,0 +1,24 @@
+{
+  "name": "handoff-nudge",
+  "version": "0.1.0",
+  "description": "A band above the prompt that suggests a handoff when the context window passes a threshold. One press has the model write a short focus line and fills /handoff with it; once the handoff mod has saved the note, the band offers /clear and points at /handoff resume.",
+  "author": { "name": "ammonkc" },
+  "repository": "https://github.com/ammonkc/claude-fiyah",
+  "license": "MIT",
+  "keywords": ["mod", "function-hooks", "handoff", "context", "band"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "thresholdPct": {
+      "type": "number",
+      "title": "Threshold (% of context window)",
+      "description": "Show the band once the context holds this share of the model's window.",
+      "default": 60
+    },
+    "thresholdTokens": {
+      "type": "number",
+      "title": "Threshold (tokens)",
+      "description": "An absolute token count that replaces the percentage. 0 uses the percentage.",
+      "default": 0
+    }
+  }
+}

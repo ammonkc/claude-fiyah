@@ -1,0 +1,35 @@
+{
+  "name": "input-router",
+  "version": "0.1.0",
+  "description": "Big MCP connector results and long PDFs are read by Haiku first; Claude gets short notes and the path of the full text. Plain Read and Bash are left alone (context-mode owns those). /input-router [on|off|status].",
+  "author": { "name": "ammonkc" },
+  "license": "MIT",
+  "repository": "https://github.com/ammonkc/claude-fiyah",
+  "keywords": ["mod", "function-hooks", "mcp", "pdf", "tokens"],
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "description": "Route big MCP results and long PDFs through Haiku. /input-router off turns it off for good until /input-router on.",
+      "default": true
+    },
+    "mcpThresholdChars": {
+      "type": "number",
+      "title": "MCP result limit (characters)",
+      "description": "An MCP result at or over this size is trimmed, then read by Haiku. Smaller results pass through untouched.",
+      "default": 16000
+    },
+    "pdfPages": {
+      "type": "number",
+      "title": "PDF page limit",
+      "description": "A Read of a PDF with more pages than this (and no pages argument) is read by Haiku.",
+      "default": 5
+    },
+    "maxChunks": {
+      "type": "number",
+      "title": "Most Haiku chunks",
+      "description": "Each chunk is about 100,000 characters read in parallel. Text past the last chunk is not read, and the notes say how much.",
+      "default": 6
+    }
+  }
+}

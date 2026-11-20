@@ -1,0 +1,4 @@
+{
+  "description": "model-router: agent.spawn asks Haiku which tier a subagent task needs and moves the model when the confidence clears the bar; an explicit model is never changed",
+  "modules": ["./model-router.ts"]
+}

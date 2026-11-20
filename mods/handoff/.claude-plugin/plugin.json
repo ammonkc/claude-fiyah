@@ -1,0 +1,24 @@
+{
+  "name": "handoff",
+  "version": "0.1.0",
+  "description": "/handoff writes a six section handoff note (goal, status, what changed, next steps, gotchas, how to verify) from the live session and git facts, saves it under ~/.claude/handoffs/<project>, copies it and shows it in a pane. /handoff resume fills the prompt with the newest note so a fresh session can continue from it.",
+  "author": { "name": "ammonkc" },
+  "repository": "https://github.com/ammonkc/claude-fiyah",
+  "license": "MIT",
+  "keywords": ["mod", "function-hooks", "handoff", "notes", "session"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "dir": {
+      "type": "string",
+      "title": "Notes folder",
+      "description": "Base folder for the notes. Each project gets its own subfolder. A path starting with ~/ is under your home folder, a relative path is under the project root.",
+      "default": "~/.claude/handoffs"
+    },
+    "copy": {
+      "type": "boolean",
+      "title": "Copy to clipboard",
+      "description": "Put each new note on the clipboard.",
+      "default": true
+    }
+  }
+}

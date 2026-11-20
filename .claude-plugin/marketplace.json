@@ -55,6 +55,26 @@
     {
       "name": "skins",
       "source": "./mods/skins"
+    },
+    {
+      "name": "handoff",
+      "source": "./mods/handoff"
+    },
+    {
+      "name": "handoff-nudge",
+      "source": "./mods/handoff-nudge"
+    },
+    {
+      "name": "model-router",
+      "source": "./mods/model-router"
+    },
+    {
+      "name": "effort-optimizer",
+      "source": "./mods/effort-optimizer"
+    },
+    {
+      "name": "input-router",
+      "source": "./mods/input-router"
     }
   ]
 }
