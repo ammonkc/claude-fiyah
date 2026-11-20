@@ -4,7 +4,10 @@ import type { Hook, Register } from 'claude-code'
 import type { Group, OutputKind } from '../types'
 import {
   buildDiffContext,
+  STATUS_ARGS,
   clip,
+  commitGroups,
+  excludeSpec,
   isSecretPath,
   openSteps,
   parseGroups,
@@ -50,17 +53,26 @@ let editedSinceReset = false
 let plan: PlanState = {}
 let turns = 0
 let planTouchedAt = 0
-let keyAtStart = ''
+let keyAtStart: Promise<string> = Promise.resolve('')
+let root = ''
 const PLAN_STALE_TURNS = 3
+const EDIT_OR_PLAN = /^(Edit|Write|MultiEdit|NotebookEdit)$|__smart_(edit|write)$|__plan_progress$/
 
-async function treeKey($: Dollar): Promise<string> {
-  const st = await git($, ['status', '--porcelain=v1', '-z'])
+async function readEntries($: Dollar): Promise<Entry[] | null> {
+  const st = await $.process.run(['git', ...STATUS_ARGS])
 
-  return st.exitCode === 0 ? statusKey(parsePorcelain(st.stdout)) : ''
+  return st.exitCode === 0 ? parsePorcelain(st.stdout) : null
 }
 
+async function treeKey($: Dollar): Promise<string> {
+  const entries = await readEntries($)
+
+  return entries ? statusKey(entries) : ''
+}
+
+// Porcelain paths are relative to the repository root, so git runs there whatever the session's folder is.
 async function git($: Dollar, args: string[], init?: { stdin?: string; timeoutMs?: number }) {
-  return $.process.run(['git', ...args], init)
+  return $.process.run(['git', ...args], root ? { ...init, cwd: root } : init)
 }
 
 const KIND_COLOR: Record<OutputKind, string> = {
@@ -91,7 +103,11 @@ async function findBase($: Dollar): Promise<string | null> {
 }
 
 async function refresh($: Dollar) {
-  const st = await git($, ['status', '--porcelain=v1', '-z'])
+  const top = await $.process.run(['git', 'rev-parse', '--show-toplevel'])
+
+  root = top.exitCode === 0 ? top.stdout.trim() : ''
+
+  const st = await git($, STATUS_ARGS)
   const entries = st.exitCode === 0 ? parsePorcelain(st.stdout) : []
   const base = st.exitCode === 0 ? await findBase($) : null
   let count = 0
@@ -114,9 +130,7 @@ async function refresh($: Dollar) {
 }
 
 function pathspec(entries: readonly Entry[]): string[] {
-  const secrets = entries.filter(e => isSecretPath(e.path)).map(e => `:(exclude)${e.path}`)
-
-  return secrets.length > 0 ? ['--', '.', ...secrets] : []
+  return excludeSpec(entries.map(e => e.path))
 }
 
 async function untrackedHeads($: Dollar, entries: readonly Entry[]): Promise<string> {
@@ -124,7 +138,12 @@ async function untrackedHeads($: Dollar, entries: readonly Entry[]): Promise<str
   const parts: string[] = []
 
   for (const e of fresh.slice(0, 8)) {
-    const r = await $.process.run(['head', '-n', '40', '--', e.path])
+    // A symlink could lead outside the repository, so only regular files are read.
+    const info = root ? await $.fs.stat(`${root}/${e.path}`).catch(() => null) : null
+
+    if (!info || info.isLink || info.kind !== 'file') continue
+
+    const r = await $.process.run(['head', '-n', '40', '--', e.path], { cwd: root })
 
     if (r.exitCode === 0) parts.push(`--- new file ${e.path} ---\n${r.stdout}`)
   }
@@ -190,33 +209,21 @@ async function commitAll($: Dollar) {
 
   if (!made) return
 
-  const byPath = new Map(made.entries.map(e => [e.path, e]))
-  const done: string[] = []
   const skipped = made.entries.filter(e => isSecretPath(e.path)).map(e => e.path)
+  let done: string[]
 
-  for (const group of made.groups) {
-    const picked = group.files.map(f => byPath.get(f)).filter((e): e is Entry => e !== undefined)
-    const addable = picked.filter(e => e.x !== 'D' && e.y !== 'D').map(e => e.path)
-    const commitPaths = picked.flatMap(e => (e.orig ? [e.path, e.orig] : [e.path]))
+  try {
+    done = await commitGroups(args => git($, args), made.groups, made.entries)
+  } catch (err) {
+    // Some groups may be committed already, so the cached grouping no longer matches the tree.
+    await update($, groupsAtom, () => null)
+    await refresh($)
 
-    if (addable.length > 0) {
-      const added = await git($, ['add', '--', ...addable])
-
-      if (added.exitCode !== 0) throw new Error(`git add failed:\n${added.stderr}`)
-    }
-
-    const committed = await git($, ['commit', '-m', group.message, '--', ...commitPaths])
-
-    if (committed.exitCode !== 0) {
-      throw new Error(`git commit failed:\n${committed.stderr || committed.stdout}`)
-    }
-
-    const sha = await git($, ['rev-parse', '--short', 'HEAD'])
-
-    done.push(`${sha.stdout.trim()} ${group.message}`)
+    throw err
   }
 
   editedSinceReset = false
+  plan = {}
   await update($, groupsAtom, () => null)
   await update($, prDesc, () => null)
   await refresh($)
@@ -242,14 +249,15 @@ async function prContext($: Dollar): Promise<{ base: string; context: string; ke
   }
 
   const log = await git($, ['log', `${base}..HEAD`, '--format=%s%n%b---'])
-  const stat = await git($, ['diff', `${base}...HEAD`, '--stat'])
-  const diff = await git($, ['diff', `${base}...HEAD`])
+  const names = await git($, ['diff', '--name-only', '-z', `${base}...HEAD`])
+  const spec = excludeSpec(names.stdout.split('\0').filter(Boolean))
+  const stat = await git($, ['diff', `${base}...HEAD`, '--stat', ...spec])
+  const diff = await git($, ['diff', `${base}...HEAD`, ...spec])
   const head = await git($, ['rev-parse', 'HEAD'])
   let context = `Commits:\n${log.stdout}\n\n${buildDiffContext(stat.stdout, diff.stdout, DIFF_MAX)}`
 
   if (entries.length > 0) {
-    const spec = pathspec(entries)
-    const extra = await git($, ['diff', 'HEAD', ...spec])
+    const extra = await git($, ['diff', 'HEAD', ...pathspec(entries)])
 
     context += `\n\nUncommitted changes:\n${clip(extra.stdout, 15000)}`
   }
@@ -323,6 +331,9 @@ async function createPr($: Dollar) {
   if (!text) return
 
   const { title, body } = splitPr(text)
+
+  if (!title) throw new Error('The PR description has no title. Regenerate it with [p] first.')
+
   const pushed = await git($, ['push', '-u', 'origin', 'HEAD'], { timeoutMs: 120000 })
 
   if (pushed.exitCode !== 0) throw new Error(`git push failed:\n${pushed.stderr}`)
@@ -375,8 +386,32 @@ async function runAction($: Dollar, label: string, fn: () => Promise<void>) {
 
 async function hideBand($: Dollar) {
   editedSinceReset = false
+  plan = {}
   await update($, visible, () => false)
   await update($, output, () => null)
+}
+
+// Reads the tree once. The full refresh (branch, commits ahead) runs only when the band is or becomes visible.
+async function showIfEdited($: Dollar, started: Promise<string>) {
+  const before = await started
+  const entries = await readEntries($)
+
+  if (!entries) return
+
+  const isShown = await read($, visible)
+
+  if (entries.length > 0 && statusKey(entries) !== before) editedSinceReset = true
+
+  if (entries.length > 0 && editedSinceReset) {
+    editedSinceReset = false
+    await refresh($)
+    await update($, output, () => null)
+    await update($, visible, () => true)
+  } else if (isShown) {
+    await refresh($)
+  } else {
+    await update($, dirty, () => entries.length)
+  }
 }
 
 export const register: Register = on => {
@@ -401,7 +436,9 @@ export const register: Register = on => {
     return { text: 'Git actions band shown.' }
   })
 
-  on('tool.call', async ($, e, next) => {
+  on('tool.call', { tool: EDIT_OR_PLAN }, async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
+
     const tool = String(e.tool)
 
     if (EDIT_TOOLS.test(tool)) editedSinceReset = true
@@ -414,34 +451,37 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    if ((e as { agentId?: string }).agentId !== undefined) return next(e)
+
     if ((await read($, busy)) === null) await update($, visible, () => false)
 
     return next(e)
   })
 
+  // The git calls run after the hook returns, so a turn never waits on them.
   on('turn.start', async ($, e, next) => {
-    keyAtStart = await treeKey($)
+    if ((e as { agentId?: string }).agentId !== undefined) return next(e)
+
+    keyAtStart = new Promise<string>(resolve => {
+      $.clock.after(0, async () => resolve(await treeKey($).catch(() => '')))
+    })
 
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
-    const isMain = e.agentId === undefined
+    if (e.agentId !== undefined) return next(e)
 
-    if (isMain) turns += 1
+    turns += 1
 
-    const isPlanOpen = openSteps(plan) > 0 && turns - planTouchedAt <= PLAN_STALE_TURNS
+    const isStale = turns - planTouchedAt > PLAN_STALE_TURNS
 
-    if (isMain && e.reason === 'answer' && !isPlanOpen) {
-      const { entries } = await refresh($)
+    if (isStale && Object.keys(plan).length > 0) plan = {}
 
-      if (entries.length > 0 && statusKey(entries) !== keyAtStart) editedSinceReset = true
+    if (e.reason === 'answer' && openSteps(plan) === 0) {
+      const started = keyAtStart
 
-      if (entries.length > 0 && editedSinceReset) {
-        editedSinceReset = false
-        await update($, output, () => null)
-        await update($, visible, () => true)
-      }
+      $.clock.after(0, () => void showIfEdited($, started).catch(() => undefined))
     }
 
     return next(e)

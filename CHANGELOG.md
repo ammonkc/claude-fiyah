@@ -6,6 +6,20 @@ All notable changes to the mods in this repository are recorded here. This file 
 
 Fixes from a review of every Claude mod in this repo. Copies of third-party mods are now marked patched in README.md.
 
+### git-actions 0.2.0
+
+- Fixed: secrets inside a new untracked folder could be committed. Status now lists untracked files one by one (`-uall`), so `.env` and key files are filtered.
+- Fixed: the PR and review diff now leaves out secret files that were already committed.
+- Fixed: the `tool.call` hook matches only edit tools and the plan tool, and subagent turns are ignored.
+- Changed: git work runs after the turn instead of inside it. Git runs from the repo toplevel, untracked symlinks are not read, an empty PR title is refused, and a failed commit says which groups were already committed.
+- Added: README. Band commits skip repo git hooks, because Claude Code runs a mod's git with hooks off.
+
+### obsidian-capture 0.7.0
+
+- Fixed: a stale plan file could be captured on a later ExitPlanMode. Tags are sanitised before they reach YAML, and the Superpowers slug can no longer contain a path.
+- Changed: same day reports get a numeric suffix instead of overwriting. Superpowers notes are written like the other captures, with a toast on failure. Summaries are clipped to 20,000 characters, and HOME comes from the environment.
+- Added: README with the vault layout.
+
 ### filetree 0.5.3 (patched copy)
 
 - Fixed: tool hooks match only edit and shell tools. Grep, Glob and long Bash output are read before context-mode shrinks them, so read highlights work. The selected file path is quoted in prompt context, and the git poll does nothing while the pane is closed.
