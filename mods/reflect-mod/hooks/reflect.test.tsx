@@ -12,16 +12,18 @@ type Opts = {
   files?: Record<string, string>
   root?: () => string
   box?: string
+  home?: string
 }
 
 function world(on: On, opts: Opts = {}) {
   const clock = mock.clock(on, { now: Date.parse('2026-10-02T12:00:00Z') })
   mock.store(on, {})
-  mock.env(on, { HOME: '/home/u' })
+  mock.env(on, { HOME: opts.home ?? '/home/u' })
   const files: Record<string, string> = { ...(opts.files ?? {}) }
   const asked: string[] = []
   const systems: string[] = []
   const filled: string[] = []
+  const toasts: string[] = []
   on('model.complete', async ($, e) => {
     const text = /<user_message>([\s\S]*)<\/user_message>/.exec(e.prompt)?.[1] ?? ''
     asked.push(text)
@@ -45,12 +47,15 @@ function world(on: On, opts: Opts = {}) {
     return { isFilled: true } as never
   })
   on('command.register', async ($, e) => ok({ command: e.name }))
-  on('ui.toast', async () => VOID)
+  on('ui.toast', async ($, e) => {
+    toasts.push(e.text)
+    return VOID
+  })
   on('ui.render', async () => ({ type: 'Box', props: {}, children: [] }) as never)
   on('session.start', async () => ({ cwd: '/repo' }) as never)
   on('prompt.submit', async ($, e) => ({ text: e.text }))
   on('prompt.compose', async () => ({ sections: [] }))
-  return { clock, files, asked, systems, filled }
+  return { clock, files, asked, systems, filled, toasts }
 }
 
 const start = ($: Engine) => $.session.start({ source: 'startup', cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
@@ -155,8 +160,9 @@ test('only short, human, non-trivial, secret-free prompts reach the model', asyn
   await say($, w, 'x '.repeat(300))
   await say($, w, 'Internal meeting ended, wrap it up', 'plugin')
   await say($, w, 'use pnpm; token=ghp_abcdefghijklmnop1234')
-  await say($, w, 'vim')
-  expect(w.asked).toEqual(['vim'])
+  await say($, w, 'run the tests')
+  await say($, w, 'use vim')
+  expect(w.asked).toEqual(['use vim'])
 })
 
 test('a repeat counts on the same row; the opposite rule gets its own row', async ($, on) => {
@@ -200,14 +206,14 @@ test('known rules, weak or broken verdicts and failing calls leave no row, and l
     files: { '/repo/CLAUDE.md': '# Repo\n- Use pnpm, not npm, in this repo\n' },
     verdicts: {
       'нет, используй pnpm': PNPM,
-      'maybe tabs?': { is_rule: true, rule: 'Use tabs', scope: 'project', confidence: 0.4 },
+      'use tabs?': { is_rule: true, rule: 'Use tabs', scope: 'project', confidence: 0.4 },
       'no, the other way': 'error',
-      'model is blocked now': 'throw',
+      'stop, model is blocked now': 'throw',
       'always answer in English': { is_rule: true, rule: 'Answer in English', scope: 'global', confidence: 0.9 },
     },
   })
   await start($)
-  for (const t of ['нет, используй pnpm', 'maybe tabs?', 'no, the other way', 'model is blocked now', 'always answer in English']) await say($, w, t)
+  for (const t of ['нет, используй pnpm', 'use tabs?', 'no, the other way', 'stop, model is blocked now', 'always answer in English']) await say($, w, t)
   expect(w.asked).toHaveLength(5)
   expect(await rows($)).toEqual(['reflect · "Answer in English"'])
 })
@@ -220,4 +226,33 @@ test('broken markers in the target file block the write', async ($, on) => {
   await press($, 'save:')
   expect(w.files['/repo/CLAUDE.md']).toBe(broken)
   expect(await rows($)).toEqual(['reflect · "Use pnpm, not npm, in this repo"'])
+})
+
+test('plain English with no correction cue is not sent to the model; other scripts always are', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await say($, w, 'run the failing tests')
+  await say($, w, 'fix the typo in the header')
+  await say($, w, '이 파일 수정해줘')
+  await say($, w, 'never commit without asking')
+  expect(w.asked).toEqual(['이 파일 수정해줘', 'never commit without asking'])
+})
+
+test('a failing check toasts once per session, not per prompt', async ($, on) => {
+  const w = world(on, { verdicts: { 'no, the other way': 'error', 'never do that again': 'error' } })
+  await start($)
+  await say($, w, 'no, the other way')
+  await say($, w, 'never do that again')
+  expect(w.asked).toHaveLength(2)
+  expect(w.toasts.filter(t => t.includes('rule check failed'))).toHaveLength(1)
+  expect(w.toasts[0]).toContain('api-error')
+})
+
+test('without HOME a global rule is refused with a toast, and nothing is written to /.claude', async ($, on) => {
+  const w = world(on, { verdicts: { 'always answer in English': { is_rule: true, rule: 'Answer in English', scope: 'global', confidence: 0.9 } }, home: '' })
+  await start($)
+  await say($, w, 'always answer in English')
+  expect(await rows($)).toEqual([])
+  expect(w.toasts.some(t => t.includes('HOME is not set'))).toBe(true)
+  expect(Object.keys(w.files)).toEqual([])
 })

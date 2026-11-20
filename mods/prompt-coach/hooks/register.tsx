@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 
-const SYSTEM = `You review a developer's prompt to an AI coding agent (Claude Code) BEFORE it is sent.
+const SYSTEM_TEXT = `You review a developer's prompt to an AI coding agent (Claude Code) BEFORE it is sent.
 Decide if a rewrite would clearly get a better result. Most prompts are fine: only flag real problems:
 vague goal, missing success criteria, ambiguous target ("fix it", "make it better"), several unrelated asks jammed together,
 missing constraints the agent will need (which file/area, what not to touch, how to verify).
@@ -15,6 +15,8 @@ When you do improve, make the SMALLEST edit: keep the user's own words and order
 (the file or area, a success criterion, a constraint). The rewrite must read like their prompt with a few words
 added, never like a new prompt.
 Answer ONLY with JSON: {"verdict":"fine"} or {"verdict":"improve","why":"<max 12 words>","rewrite":"<the improved prompt>"}`
+// The same block every call: marked for the prompt cache.
+const SYSTEM = [{ text: SYSTEM_TEXT, cache: true as const }]
 
 /** The last few turns, oldest first, trimmed so the reviewer sees what the user is referring to. */
 function recentTurns(messages: { role: string; text: string }[], max = 6, perMessage = 700): string {
@@ -39,6 +41,21 @@ function keptShare(prompt: string, rewrite: string): number {
 
 type Verdict = { verdict: 'fine' } | { verdict: 'improve'; why: string; rewrite: string }
 
+/**
+ * A prompt prompt-drafts would save instead of sending (ends with ";;" as a word of its own, outside an open code
+ * fence, not at the end of a shell `case`). The check is duplicated from that mod on purpose: mods import nothing from each other.
+ */
+function isDraftMarked(text: string): boolean {
+  const t = text.trimEnd()
+  if (!t.endsWith(';;')) return false
+  const before = t.slice(0, -2)
+  if (before !== '' && !/\s$/.test(before)) return false
+  if ((before.match(/^[ \t]*(```|~~~)/gm) ?? []).length % 2 === 1) return false
+  const lastCase = [...before.matchAll(/^[ \t]*case[ \t]+\S+[ \t]+in[ \t]*$/gm)].at(-1)
+
+  return !(lastCase && !/\besac\b/.test(before.slice(lastCase.index)))
+}
+
 const SKIP = /^\s*([\/!#]|(y|yes|no|n|ok|okay|sure|go|go ahead|continue|proceed|thanks|thank you|do it|lgtm|nope|stop)\b[.!]?\s*$)/i
 
 function parse(text: string): Verdict | undefined {
@@ -56,24 +73,40 @@ function parse(text: string): Verdict | undefined {
   }
 }
 
+// One toast per session when the reviewer call fails, so a dead reviewer is not silent and not noisy.
+let hasWarned = false
+
 async function review($: EngineInterface, prompt: string, model: string): Promise<Verdict | undefined> {
   const messages = await $.session.messages().catch(() => [])
   const conversation = Array.isArray(messages) ? recentTurns(messages) : ''
   const project = (await $.session.root()).split(/[\\/]/).at(-1) ?? ''
-  const stop = new AbortController()
-  const timer = $.clock.after(15000, () => stop.abort())
-  const result = await $.model.complete(
-    {
+  const warn = (why: string) => {
+    if (hasWarned) return
+    hasWarned = true
+    $.ui.toast(`prompt-coach: the review call failed (${why}); prompts are sent as typed`)
+  }
+  let result: Awaited<ReturnType<EngineInterface['model']['complete']>>
+  try {
+    result = await $.model.complete({
       model,
       system: SYSTEM,
+      effort: 'low',
       maxTokens: 700,
+      timeoutMs: 15000,
       prompt: `Project folder: ${project}\nRecent conversation, oldest first (may be empty):\n"""${conversation}"""\n\nUser's new prompt:\n"""${prompt}"""`,
-    },
-    { signal: stop.signal },
-  )
-  timer.cancel()
+    })
+  } catch (error) {
+    warn(String(error))
 
-  const verdict = result.isAnswered ? parse(result.text) : undefined
+    return undefined
+  }
+  if (!result.isAnswered) {
+    warn(result.reason)
+
+    return undefined
+  }
+
+  const verdict = parse(result.text)
   // A rewrite that drops most of what they wrote is a different prompt, not a better one: stay quiet.
   if (verdict?.verdict === 'improve' && keptShare(prompt, verdict.rewrite) < 0.5) return { verdict: 'fine' }
 
@@ -82,10 +115,12 @@ async function review($: EngineInterface, prompt: string, model: string): Promis
 
 export const register: Register = (on, options) => {
   const model = typeof options.model === 'string' && options.model !== '' ? options.model : 'haiku'
-  const minChars = Number(options.minChars ?? 8)
+  const configured = Number(options.minChars ?? 8)
+  const minChars = Number.isFinite(configured) ? configured : 8
   let enabled = options.enabled !== false
 
   on('session.start', async ($, e, next) => {
+    hasWarned = false
     await $.command.register({ name: 'coach', description: 'Prompt coach on/off: suggests a better prompt before sending', argumentHint: '[on|off]' })
     const stored = await $.store.get('enabled')
     if (typeof stored === 'boolean') enabled = stored
@@ -104,7 +139,7 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     // typed at the terminal, from the desktop app / SDK host, or from your phone via Remote Control
     const isPerson = e.origin.kind === 'composer' || e.origin.kind === 'sdk' || e.origin.kind === 'bridge'
-    if (!enabled || !isPerson || SKIP.test(e.text) || e.text.trim().length < minChars || e.text.length > 4000) return next(e)
+    if (!enabled || !isPerson || SKIP.test(e.text) || isDraftMarked(e.text) || e.text.trim().length < minChars || e.text.length > 4000) return next(e)
 
     $.ui.status('coach: reviewing prompt…')
     let verdict: Verdict | undefined

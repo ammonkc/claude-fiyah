@@ -77,12 +77,12 @@ npx claude-code-templates@latest --mod observability/prompt-cache-control
 claude
 ```
 
-It is written to `.claude/skills/prompt-cache-control/`, which Claude Code auto-loads as `prompt-cache-control@skills-dir` once the workspace trust prompt is accepted. For one session with hot reload: `claude --plugin-dir .claude/skills/prompt-cache-control`. `claude plugin validate .claude/skills/prompt-cache-control` prints every event it hooks and every `$` call it makes; `claude plugin test .claude/skills/prompt-cache-control` runs its tests.
+It is written to `.claude/skills/prompt-cache-control/`, which Claude Code auto-loads as `prompt-cache-control@claude-fiyah` once the workspace trust prompt is accepted. For one session with hot reload: `claude --plugin-dir .claude/skills/prompt-cache-control`. `claude plugin validate .claude/skills/prompt-cache-control` prints every event it hooks and every `$` call it makes; `claude plugin test .claude/skills/prompt-cache-control` runs its tests.
 
 Options are read from user settings (`~/.claude/settings.json`, never project settings), `--settings <file>` or managed settings, under the plugin's full id:
 
 ```json
-{ "pluginConfigs": { "prompt-cache-control@skills-dir": { "options": { } } } }
+{ "pluginConfigs": { "prompt-cache-control@claude-fiyah": { "options": { } } } }
 ```
 
 **Requirements.** Mods are on by default in Claude Code 2.1.287+. Typed against Anthropic's declarations: https://github.com/anthropics/claude-code/tree/main/mods

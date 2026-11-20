@@ -6,9 +6,7 @@
 
 A [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview) that keeps prompts aside as drafts and puts them back in the prompt box when you need them.
 
-End a prompt with `;;` and press Enter. It is saved, not sent. Type `/drafts` and press a number to bring it back.
-
-![prompt-drafts: save two prompts with ;;, open /drafts, press 2 to bring one back](docs/demo.gif)
+End a prompt with `;;` and press Enter. It is saved, not sent. Type `/drafts` and pick one to bring it back.
 
 ## Install
 
@@ -38,15 +36,15 @@ claude --plugin-dir ./mods/prompt-drafts
 |---|---|
 | Save the prompt you are writing | End it with `;;` and press Enter. It is not sent. |
 | Save some text | `/draft <text>` |
-| Put a draft back in the prompt box | `/drafts`, then press its number. Or `/drafts <n>` |
+| Put a draft back in the prompt box | `/drafts`, then click it, or press ctrl+x tab and its letter. Or `/drafts <n>` |
 | Save what is in the prompt box | **Save prompt box** in the sidebar |
 | Delete a draft | `×` in the sidebar, or `/drafts rm <n>` |
 | Bring back the draft you just deleted | **Undo** in the sidebar, or `/drafts undo` |
 
 ### What `/drafts` shows
 
-- **110 columns or wider:** a sidebar with every draft and a numbered row above the prompt box. Press a number in the empty prompt box to use that draft, or `0` to close. You can also click a draft in the sidebar.
-- **Narrower** (a phone, a split pane): Claude Code's own question dialog. Use the arrow keys or a number, then Enter. It lists four drafts at a time, and the last option shows the next page.
+- **110 columns or wider:** a sidebar with every draft and a lettered row above the prompt box. Click a draft, or press ctrl+x tab to focus the row and then its letter (`a` for the newest), or `x` to close. The keys are letters on purpose: bare digits in an empty prompt box belong to the next-steps mod, and two plugins on one hotkey press neither.
+- **Narrower** (a phone, a split pane): Claude Code's own question dialog. Use the arrow keys or a number, then Enter. Here the numbers belong to the dialog itself. It lists four drafts at a time, and the last option shows the next page.
 - **No prompt box** (headless runs): a plain numbered list.
 
 ### How drafts are kept
@@ -88,6 +86,7 @@ Third party marketplaces do not update on their own unless you turn on auto upda
 | Interface | `$.command.register`, `$.ui.ask`, `$.ui.open`, `$.ui.close`, `$.ui.panes`, `$.ui.toast`, `$.ui.resolve`, `$.state.get`, `$.state.set`, `$.clock.now` |
 
 - No network requests, no processes, no files outside the plugin store.
+- The `;;` counts only as its own word (after a space or a new line), outside an open code fence, and not at the end of a shell `case` block. Use `/draft` for those.
 - Only prompts you type are checked for `;;`. Prompts submitted by other plugins or sessions pass through unchanged.
 
 ## Development

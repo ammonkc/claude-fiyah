@@ -60,8 +60,8 @@ globally; `/reflect-pause` stops and resumes checking.
 
 ## Cost and privacy
 
-One small model call per eligible prompt, on the session's own client - it counts toward your Claude usage like any
-request. The prompt text is not stored; found rules are kept in the plugin's own store (a JSON file under your Claude
+One small model call per eligible prompt, on the session's own client, which counts toward your Claude usage like any
+request. A plain ASCII prompt with no correction cue (no "not", "never", "always", "use", "instead" and the like) is skipped without a call; a prompt with any non-ASCII character always goes to the model. The model is the `model` setting (default `haiku`, an alias, so it also works on Bedrock). The prompt text is not stored; found rules are kept in the plugin's own store (a JSON file under your Claude
 Code config directory) until you decide on them.
 
 ## Known limits
@@ -76,5 +76,5 @@ Code config directory) until you decide on them.
 
 ```bash
 claude plugin validate mod
-claude plugin test mod        # 10 tests, mocked model - free
+claude plugin test mod        # 13 tests, mocked model - free
 ```

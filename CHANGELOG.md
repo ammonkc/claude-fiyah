@@ -20,6 +20,30 @@ Fixes from a review of every Claude mod in this repo. Copies of third-party mods
 - Changed: same day reports get a numeric suffix instead of overwriting. Superpowers notes are written like the other captures, with a toast on failure. Summaries are clipped to 20,000 characters, and HOME comes from the environment.
 - Added: README with the vault layout.
 
+### notify 0.2.0 (patched copy)
+
+- Fixed: the catch-all `tool.call` hook (which also ran a permission check per call) is replaced by `classic.PermissionRequest` and an exact AskUserQuestion matcher. Auto mode is kept in state, the platform is detected once, and `notify-send` guards leading dashes.
+
+### next-steps 1.1.0 (patched copy)
+
+- Fixed: suggestions no longer fork on subagent turns. The fork runs at low effort with a 30 second timeout.
+
+### prompt-drafts 0.2.0 (patched copy)
+
+- Changed: the `;;` marker needs whitespace before it and is ignored inside code fences and shell `case` blocks. Band hotkeys are letters (a to i, x closes) so they can't clash with next-steps' digits.
+
+### prompt-coach 0.1.4 (patched copy)
+
+- Changed: uses the model call's own timeout, low effort and a cached system prompt, and skips prompts prompt-drafts would save. A failed review shows one toast per session.
+
+### reflect-mod 3.4.0 (patched copy)
+
+- Changed: only prompts with a correction cue are sent to the model. Store writes are serialised, a failed check shows one toast per session, an empty HOME is refused, and `model` is a setting.
+
+### prompt-cache-control 0.2.0 (patched copy)
+
+- Fixed: Bedrock inference profile ARNs map to their model family, so the cache switches and the pane name work. Usage is no longer awaited on every request once it showed no limits, the timer runs only while counting down, and the config key names `@claude-fiyah`.
+
 ### filetree 0.5.3 (patched copy)
 
 - Fixed: tool hooks match only edit and shell tools. Grep, Glob and long Bash output are read before context-mode shrinks them, so read highlights work. The selected file path is quoted in prompt context, and the git poll does nothing while the pane is closed.

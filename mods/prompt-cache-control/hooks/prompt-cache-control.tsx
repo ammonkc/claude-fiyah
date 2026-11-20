@@ -25,7 +25,7 @@
  *
  * Needs Claude Code >= 2.1.287.
  *
- * Options (pluginConfigs["prompt-cache-control@skills-dir"].options):
+ * Options (pluginConfigs["prompt-cache-control@claude-fiyah"].options):
  *   ttl: "auto" | "5m" | "1h"   cache lifetime (default auto)
  *   warnSeconds: number         countdown threshold for the warning (default 60)
  *   compactAtTokens: number     prompt size that makes an expired cache suggest /compact (default 100000)
@@ -44,6 +44,7 @@ import {
   fmtTokens,
   hitRatio,
   isCachingDisabled,
+  shortModel,
   accountOf,
   decideTtl,
   observeTtl,
@@ -75,6 +76,8 @@ let ttlSource = 'default'
 let envSource = 'default'
 let env: CacheEnv = {}
 let timer: { cancel: () => void } | undefined
+// the plan windows came back empty after a response: an API key or a cloud provider, which no later request changes
+let hasNoWindows = false
 let lastKey = ''
 let toastedFor = 0
 let toastLevel = Infinity
@@ -86,7 +89,7 @@ function current(policy: Policy, now: number) {
   const last = samples[samples.length - 1]
   const prev = samples[samples.length - 2]
   const disabled = last ? isCachingDisabled(last.model, env) : isCachingDisabled('', env)
-  const advice: Advice = advise(last, prev, { ttl, ...policy }, now, disabled)
+  const advice: Advice = advise(last, prev, { ttl, ...policy }, now, disabled, env)
   const left = last ? remainingMs(last, ttl, now) : 0
   return { last, advice, left }
 }
@@ -125,6 +128,42 @@ async function readSetting($: EngineInterface): Promise<unknown> {
   return undefined
 }
 
+type Show = { status: boolean; toast: boolean }
+
+// The one-second tick runs only while a request's cache is counting down: armed by a request, it stops itself at expiry.
+function tick($: EngineInterface, policy: Policy, show: Show) {
+  const now = Date.now()
+  const { last, advice, left } = current(policy, now)
+  const key = `${advice.kind}|${advice.text}|${left > 0 ? fmtClock(left) : ''}`
+  if (key !== lastKey) {
+    lastKey = key
+    if (show.status) $.ui.status(shortLine(policy, now))
+    $.ui.invalidate('ui.render')
+  }
+  if (show.toast && last && left > 0 && promptTokens(last) >= TOAST_MIN_TOKENS) {
+    if (toastedFor !== last.startedAt) {
+      toastedFor = last.startedAt
+      toastLevel = Infinity
+    }
+    // the first toast comes at warnSeconds, then 10, 3, 2 and 1 seconds; a late tick skips to the newest one
+    const secs = Math.ceil(left / 1000)
+    const mark = nextToastMark(secs, policy.warnMs / 1000, toastLevel)
+    if (mark !== undefined) {
+      toastLevel = mark
+      const tail = secs <= COUNTDOWN_MARKS[0] ? 'send a message now' : `send a message to keep ${fmtTokens(promptTokens(last))} tokens warm`
+      $.ui.toast(`cache expires in ${secs >= 60 ? fmtClock(left) : `${secs}s`}: ${tail}`)
+    }
+  }
+  if (!last || left <= 0) {
+    timer?.cancel()
+    timer = undefined
+  }
+}
+
+function arm($: EngineInterface, policy: Policy, show: Show) {
+  timer ??= $.clock.every(1000, () => tick($, policy, show))
+}
+
 export const register: Register = (on, options) => {
   const policy: Policy = {
     warnMs: positive(options.warnSeconds, 60) * 1000,
@@ -139,6 +178,7 @@ export const register: Register = (on, options) => {
     samples = []
     lastKey = ''
     toastedFor = 0
+    hasNoWindows = false
     const none = () => undefined
     env = {
       enable1h: await $.env.get('ENABLE_PROMPT_CACHING_1H').catch(none),
@@ -148,6 +188,9 @@ export const register: Register = (on, options) => {
       disableHaiku: await $.env.get('DISABLE_PROMPT_CACHING_HAIKU').catch(none),
       disableSonnet: await $.env.get('DISABLE_PROMPT_CACHING_SONNET').catch(none),
       disableOpus: await $.env.get('DISABLE_PROMPT_CACHING_OPUS').catch(none),
+      haikuId: await $.env.get('ANTHROPIC_DEFAULT_HAIKU_MODEL').catch(none),
+      sonnetId: await $.env.get('ANTHROPIC_DEFAULT_SONNET_MODEL').catch(none),
+      opusId: await $.env.get('ANTHROPIC_DEFAULT_OPUS_MODEL').catch(none),
     }
     pinned = options.ttl === '5m' || options.ttl === '1h'
     observed = undefined
@@ -170,30 +213,7 @@ export const register: Register = (on, options) => {
     $.ui.log(`prompt-cache-control loaded: ${ttl} cache (${ttlSource}), /${COMMAND} opens the table`, { to: 'debug' })
 
     timer?.cancel()
-    timer = $.clock.every(1000, () => {
-      const now = Date.now()
-      const { last, advice, left } = current(policy, now)
-      const key = `${advice.kind}|${advice.text}|${left > 0 ? fmtClock(left) : ''}`
-      if (key !== lastKey) {
-        lastKey = key
-        if (showStatus) $.ui.status(shortLine(policy, now))
-        $.ui.invalidate('ui.render')
-      }
-      if (wantToast && last && left > 0 && promptTokens(last) >= TOAST_MIN_TOKENS) {
-        if (toastedFor !== last.startedAt) {
-          toastedFor = last.startedAt
-          toastLevel = Infinity
-        }
-        // the first toast comes at warnSeconds, then 10, 3, 2 and 1 seconds; a late tick skips to the newest one
-        const secs = Math.ceil(left / 1000)
-        const mark = nextToastMark(secs, policy.warnMs / 1000, toastLevel)
-        if (mark !== undefined) {
-          toastLevel = mark
-          const tail = secs <= COUNTDOWN_MARKS[0] ? 'send a message now' : `send a message to keep ${fmtTokens(promptTokens(last))} tokens warm`
-          $.ui.toast(`cache expires in ${secs >= 60 ? fmtClock(left) : `${secs}s`}: ${tail}`)
-        }
-      }
-    })
+    timer = undefined
     return r
   })
 
@@ -232,8 +252,13 @@ export const register: Register = (on, options) => {
       })
       if (samples.length > KEEP) samples = samples.slice(-KEEP)
       if (!pinned) {
-        // the account can change under a session: a subscription running out of plan usage moves to usage credits
-        account = accountOf((await $.session.usage().catch(() => undefined))?.rateLimits ?? [])
+        // the account can change under a session: a subscription running out of plan usage moves to usage credits;
+        // once a response came with no plan windows there is nothing to watch, so the call is not made again
+        if (!hasNoWindows) {
+          const usage = await $.session.usage().catch(() => undefined)
+          account = accountOf(usage?.rateLimits ?? [])
+          if (usage !== undefined && usage.rateLimits.length === 0) hasNoWindows = true
+        }
         const choice = decideTtl(options.ttl, env, setting, account)
         baseTtl = choice.ttl
         envSource = choice.source
@@ -250,8 +275,10 @@ export const register: Register = (on, options) => {
         }
       }
       lastKey = ''
-      if (showStatus) $.ui.status(shortLine(policy, Date.now()))
-      $.ui.invalidate('ui.render')
+      // draw the new sample now (the key was cleared, so the tick redraws), then keep ticking while it counts down
+      const show = { status: showStatus, toast: wantToast }
+      arm($, policy, show)
+      tick($, policy, show)
     }
     return r
   })
@@ -376,7 +403,7 @@ export const register: Register = (on, options) => {
 
         <Box key="advice" marginTop={1} flexDirection="column">
           <Text bold color={stateColor}>{sp(`${icon} ${advice.text}`)}</Text>
-          {last ? <Text dimColor>{sp(fit(`${last.model} · prompt ${fmtTokens(promptTokens(last))} tokens`, width))}</Text> : null}
+          {last ? <Text dimColor>{sp(fit(`${shortModel(last.model, env)} · prompt ${fmtTokens(promptTokens(last))} tokens`, width))}</Text> : null}
         </Box>
 
         {last ? (

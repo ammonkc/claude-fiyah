@@ -5,9 +5,20 @@ const d = (i: number, body = `t${i}`) => ({ id: `${i}`, title: title(body), text
 
 test('the marker at the end saves, anywhere else it does not', () => {
   expect(marked('write the release notes ;;')).toBe('write the release notes')
-  expect(marked('two lines\nof prompt;;  ')).toBe('two lines\nof prompt')
+  expect(marked('two lines\nof prompt ;;  ')).toBe('two lines\nof prompt')
   expect(marked('a;; in the middle')).toBe(null)
   expect(marked(';;')).toBe('')
+  expect(marked('write the notes\n;;')).toBe('write the notes')
+})
+
+test('a trailing ;; that is code, not the marker, is not saved', () => {
+  expect(marked('echo a;;')).toBe(null)
+  expect(marked('fix this:\n```sh\nls\n;;')).toBe(null)
+  expect(marked('fix this:\n```sh\nls\n```\nthen commit ;;')).toBe('fix this:\n```sh\nls\n```\nthen commit')
+  expect(marked('case $x in\n  a) echo a ;;')).toBe(null)
+  expect(marked('case $x in\n  a)\n    echo a\n    ;;')).toBe(null)
+  expect(marked('case $x in\n  a) echo a ;;\nesac\n;;')).toBe('case $x in\n  a) echo a ;;\nesac')
+  expect(marked('in this case, rework the parser in the second module ;;')).toBe('in this case, rework the parser in the second module')
 })
 
 test('title is the first line, the preview up to two more', () => {

@@ -31,6 +31,10 @@ export type CacheEnv = {
   disableHaiku?: string
   disableSonnet?: string
   disableOpus?: string
+  /** ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL: what the family names resolve to (a Bedrock ARN, a Vertex id, ...) */
+  haikuId?: string
+  sonnetId?: string
+  opusId?: string
 }
 
 /** One main-loop request, as the API reported it. */
@@ -112,13 +116,41 @@ export function ttlMs(ttl: Ttl): number {
   return ttl === '1h' ? 3_600_000 : 300_000
 }
 
+/**
+ * The model family a model id belongs to. An id that is exactly what ANTHROPIC_DEFAULT_*_MODEL names (a Bedrock ARN
+ * says nothing about its family) is that family; any other id by the family word it contains.
+ */
+export function modelFamily(model: string, env: CacheEnv = {}): 'haiku' | 'sonnet' | 'opus' | undefined {
+  const id = model.trim()
+  if (id !== '') {
+    if (id === env.haikuId?.trim()) return 'haiku'
+    if (id === env.sonnetId?.trim()) return 'sonnet'
+    if (id === env.opusId?.trim()) return 'opus'
+  }
+  const name = id.toLowerCase()
+  if (name.includes('haiku')) return 'haiku'
+  if (name.includes('sonnet')) return 'sonnet'
+  if (name.includes('opus')) return 'opus'
+  return undefined
+}
+
+/** A model id short enough to show: the family name for a configured default, else the tail of a long ARN or path. */
+export function shortModel(model: string, env: CacheEnv = {}): string {
+  const id = model.trim()
+  const named = id !== '' && [env.haikuId, env.sonnetId, env.opusId].some(v => v?.trim() === id)
+  if (named) return modelFamily(id, env) ?? id
+  if (!/[/:]/.test(id)) return id
+  const tail = id.split(/[/:]/).filter(Boolean).at(-1) ?? id
+  return tail.length > 24 ? `${tail.slice(0, 23)}…` : tail
+}
+
 /** Caching switched off for this model by the environment. */
 export function isCachingDisabled(model: string, env: CacheEnv): boolean {
   if (isOn(env.disableAll)) return true
-  const name = model.toLowerCase()
-  if (name.includes('haiku')) return isOn(env.disableHaiku)
-  if (name.includes('sonnet')) return isOn(env.disableSonnet)
-  if (name.includes('opus')) return isOn(env.disableOpus)
+  const family = modelFamily(model, env)
+  if (family === 'haiku') return isOn(env.disableHaiku)
+  if (family === 'sonnet') return isOn(env.disableSonnet)
+  if (family === 'opus') return isOn(env.disableOpus)
   return false
 }
 
@@ -144,23 +176,23 @@ export function remainingMs(s: Sample, ttl: Ttl, now: number): number {
  * when it did not miss. A prompt that shrank is a /compact or /clear, not a
  * miss, and the first request of a session has nothing to read.
  */
-export function missReason(prev: Sample | undefined, cur: Sample, ttl: Ttl): string | undefined {
+export function missReason(prev: Sample | undefined, cur: Sample, ttl: Ttl, env?: CacheEnv): string | undefined {
   if (!prev) return undefined
   const before = promptTokens(prev)
   if (before === 0 || promptTokens(cur) < before * 0.7) return undefined
   if (cur.read >= before * 0.5 || cur.write === 0) return undefined
-  if (cur.model !== prev.model) return `model changed (${prev.model} to ${cur.model})`
+  if (cur.model !== prev.model) return `model changed (${shortModel(prev.model, env)} to ${shortModel(cur.model, env)})`
   if (cur.startedAt - prev.startedAt > ttlMs(ttl)) return `the ${ttl} cache had lapsed`
   return 'the prompt prefix changed (effort, tools, system prompt or CLAUDE.md)'
 }
 
-export function advise(last: Sample | undefined, prev: Sample | undefined, policy: Policy, now: number, disabled: boolean): Advice {
+export function advise(last: Sample | undefined, prev: Sample | undefined, policy: Policy, now: number, disabled: boolean, env?: CacheEnv): Advice {
   if (disabled) return { kind: 'off', text: 'prompt caching is off for this model (DISABLE_PROMPT_CACHING*)' }
   if (!last) return { kind: 'cold', text: 'no request yet: the first one writes the cache' }
   if (last.read + last.write === 0) {
     return { kind: 'uncached', text: 'this request was not cached (prompt under the model minimum, or caching off)' }
   }
-  const miss = missReason(prev, last, policy.ttl)
+  const miss = missReason(prev, last, policy.ttl, env)
   const left = remainingMs(last, policy.ttl, now)
   const size = promptTokens(last)
   if (left <= 0) {

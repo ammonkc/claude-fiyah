@@ -79,12 +79,12 @@ Copies run the same code as upstream, so the protection comes from the audit and
 |---|---|---|---|
 | plan-progress | 1.1.0 (patched) | zycck/claude-mods | none in repo; plugin.json says MIT |
 | image-view | 0.2.1 (patched) | jarrodwatts/claude-image-view | MIT (LICENSE) |
-| next-steps | 1.0.0 | anthropics/claude-plugins-community | none in repo; plugin.json says MIT |
-| notify | 0.1.3 | mishgoldenberg/claude-mods | none |
-| prompt-coach | 0.1.3 | mishgoldenberg/claude-mods | none |
-| prompt-drafts | 0.1.0 | vynnlee/mods | none in repo; plugin.json says MIT |
-| reflect-mod | 3.3.0 | bayramannakov/claude-reflect | none in repo; plugin.json says MIT |
-| prompt-cache-control | 0.1.0 | davila7/claude-code-templates | none in repo; plugin.json says MIT |
+| next-steps | 1.1.0 (patched) | anthropics/claude-plugins-community | none in repo; plugin.json says MIT |
+| notify | 0.2.0 (patched) | mishgoldenberg/claude-mods | none |
+| prompt-coach | 0.1.4 (patched) | mishgoldenberg/claude-mods | none |
+| prompt-drafts | 0.2.0 (patched) | vynnlee/mods | none in repo; plugin.json says MIT |
+| reflect-mod | 3.4.0 (patched) | bayramannakov/claude-reflect | none in repo; plugin.json says MIT |
+| prompt-cache-control | 0.2.0 (patched) | davila7/claude-code-templates | none in repo; plugin.json says MIT |
 | filetree | 0.5.3 (patched) | data-goblin/claude-code-filetree | MIT (LICENSE) |
 | flightdeck | 0.5.2 (patched) | scasella/claude-flightdeck | MIT (LICENSE) |
 | skins | 0.6.0 (patched) | hellosverre/claude-skins | MIT (LICENSE) |
@@ -100,7 +100,7 @@ Audited 2026-10-28. Findings that matter when you review an update:
 - **prompt-cache-control**: reads `settings.json` files (read only) for the cache lifetime setting.
 - **notify**: runs `osascript`, `powershell` or `notify-send` with arguments that have quotes and shell characters stripped.
 - **flightdeck**: no network, process or filesystem access.
-- **prompt-coach**: patched here in 0.1.3, so it is no longer a verbatim copy. The reviewer model default is the alias `haiku` instead of the first-party id `claude-haiku-4-5-20251001`, which Bedrock rejects.
+- **prompt-coach**: the reviewer model default is the alias `haiku` instead of the first-party id `claude-haiku-4-5-20251001`, which Bedrock rejects.
 
 Patched 2026-11-19 after a review of all mods (see CHANGELOG.md for each copy). The common fix: catch-all `tool.call` hooks were replaced with exact matchers or classic PostToolUse hooks, because a hook that may match a tool turns off that tool's move to the background and its live output.
 
