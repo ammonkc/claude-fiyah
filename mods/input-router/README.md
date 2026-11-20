@@ -1,93 +1,67 @@
 # input-router
 
-Big MCP connector results and long PDFs are read by Haiku first. Claude gets
-short notes written for the task, plus the path of the full text if it needs
-exact wording. Everything under the limits passes through untouched.
+Gives Claude a map of large MCP documents and reads long PDFs with Haiku. MCP results are never changed, so context-mode still indexes them whole.
 
-This is a reduced port of the input router in
+```
+[input-router] Outline of the mcp__plugin_atlassian_atlassian__getConfluenceContent result (28,168 chars).
+A map, not the content: use these section names to aim a search or read at the part you need.
+Title: Indirect Lending - Engineering Protocols for Deployments
+Sections:
+  Deployment Windows
+  Deployment Rotation
+  Daily Habits
+  Deployment Preparation
+  ...
+Contains: 6 tables, 2 checklist items, 48 list items, 14 links.
+```
+
+Ported by hand from
 [michaelzwiener/claude-mods](https://github.com/michaelzwiener/claude-mods/tree/a2bf57cc3ff8e37a2e22106733567cfbcb843808/plugins/input-router)
-(pinned at commit `a2bf57cc3ff8e37a2e22106733567cfbcb843808`). Only the connector
-path and the PDF path were ported, written again by hand rather than copied.
-The upstream repository has no license file at that commit, so none is copied
-here. The idea, the trim rules and the prompt shape are credited to it.
+and reworked to sit beside context-mode instead of competing with it.
+The upstream repository has no license file at that commit, so none is copied here.
 
-## What it routes
+## How it works
 
-| Input | Trigger | What Claude gets |
-| --- | --- | --- |
-| MCP tool result (`mcp__*`) | text over `mcpThresholdChars` (16000) | the trimmed JSON if that is small enough, else notes by Haiku |
-| `Read` of a `.pdf` | more than `pdfPages` (5) pages, no `pages` argument | notes by Haiku and the path of the extracted text |
+- **`tool.run` on `mcp__*` tools** (matched by `/^mcp__/`, so no other tool is touched). `tool.run` sits beneath PostToolUse, so it sees the raw result before context-mode swaps it for a search pointer. The result goes on unchanged.
+  - A result of `outlineMinChars` (4,096) or more that reads as a document (a page, an issue, a comment thread) gets an outline in the call's `context`: the title, the heading tree and what it holds. Claude reads it after the result. You never see it.
+  - A list of records (search hits, issue lists, metrics, log lines) gets nothing added. Exact retrieval through context-mode suits those better than any map.
+  - A tool named in `synthesizeTools` also gets a short Haiku synthesis for your last request, beside the outline. It is marked as lossy. The full result stays the source of truth.
+  - When core saved an oversize result to its own `tool-results` folder, the outline is built from that file. A path anywhere else is never read.
+- **`tool.call` on `Read` of a `.pdf`** with more than `pdfPages` pages and no `pages` argument. After `$.tool.check` allows the Read, `pdftotext` (from `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin` only) extracts the text. Haiku writes notes in parallel chunks, and the text is kept under `~/.claude/mods-logs/input-router/text/` for 7 days so Claude can read exact pages.
+- **`/input-router [on|off|status]`** turns it off or on for good and shows this session's counts.
 
-For an MCP result the mod lets the tool run first, then:
+## Why it works this way with context-mode
 
-1. Drops fields almost no task reads (avatars, icons, thumbnails, html copies of
-   plain fields, rich text, `self` links, `expand`, `__typename`, `etag`) and
-   empty values. A field whose name shares a word with your last request or the
-   call's arguments is kept. JSON written inside a text field is unpacked first.
-2. If the result is now under the limit, that trimmed text is what Claude gets,
-   with a line naming the fields dropped.
-3. Otherwise Haiku reads it in up to `maxChunks` (6) chunks of about 100,000
-   characters, in parallel, with your last real request (up to 12,000
-   characters) as the task. Claude gets the notes, labelled "Notes by Haiku from
-   N chunks of <tool>; M chars not read", and the path of the raw result.
+context-mode replaces every MCP result over 4 KB with a search pointer and indexes the full text. That is lossless, but on the first turn Claude has not seen the document, so its first search is a guess. The outline fixes that without a model call and without losing anything. Claude's first search can use a real section name.
 
-The raw result is saved under `~/.claude/mods-logs/input-router/results/`. Files
-there, and the PDF text files under `.../text/`, are deleted after 7 days when a
-session starts.
+A Haiku summary that replaced the result would be lossy, and context-mode would then index the summary instead of the source. That is why synthesis only ever rides beside the result, and only for tools you choose.
 
-For a PDF the mod asks Claude Code's own permission check first and only goes on
-when the Read would be allowed. It finds `pdfinfo` and `pdftotext` only in
-`/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin`. A scanned PDF with no text
-layer, a missing tool or any failure falls through to the normal Read. A Read
-that names `pages` is never touched.
+Plain Read and Bash output are left to context-mode entirely.
 
-If Haiku fails for any reason, Claude gets the original result unchanged.
+## Options
 
-## Why Read and Bash are left alone
+| Option | Default | What it does |
+|---|---|---|
+| `enabled` | `true` | Turns the mod on or off. |
+| `outlineMinChars` | `4096` | Smallest MCP result that gets an outline. 4,096 matches context-mode's own trigger. |
+| `synthesizeTools` | empty | Comma separated tool names or parts of names (for example `getConfluenceContent, getJiraIssue`), or `*`. Empty turns synthesis off. |
+| `pdfPages` | `5` | A PDF with more pages than this is read by Haiku. |
+| `maxChunks` | `6` | Most PDF chunks of about 100,000 characters read in parallel. The notes say how much was left unread. |
 
-Large file reads and shell output are already handled by context-mode, which
-keeps them out of the conversation and offers search over the indexed text.
-Doing the same here would route one read through two layers and make Claude's
-view of a file depend on which layer got it. So this mod never touches a plain
-Read, Bash, or the tools of context-mode, browser automation and the plugin
-authoring server (their exact output drives the next step).
+## Privacy and logs
 
-## Security: saved result paths
+`~/.claude/mods-logs/input-router.log` gets one line per decision: the tool name, the result's shape and size, the kind of document and timings. It never holds content, arguments or your request. A synthesis sends the document (cut to 100,000 characters) and your last request (cut to 12,000) to Haiku through the engine's own model call.
 
-When a result is over Claude Code's own size cap, core replaces it with a note
-that says "Output has been saved to <path>". The upstream mod read that path
-as given, so a hostile MCP server could name any file the user can read. This
-port reads such a path only when it resolves, with every link followed, to a
-file at `~/.claude/projects/<project>/<session>/tool-results/<file>` and is
-under 4 MiB. Any other path is ignored and the result passes through.
+## Install
 
-## Command
+```
+claude plugin install input-router@claude-fiyah
+```
 
-`/input-router [on|off|status]`. `off` and `on` are kept across sessions
-(`$.store`). Status shows the limits and how many results were routed in this
-session.
+or `/plugin install input-router --marketplace ammonkc/claude-fiyah`.
 
-## Settings
+## Tests
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `enabled` | true | Master switch from the mod settings |
-| `mcpThresholdChars` | 16000 | MCP results at or over this are trimmed, then read by Haiku |
-| `pdfPages` | 5 | PDFs with more pages than this are read by Haiku |
-| `maxChunks` | 6 | Most Haiku chunks per input; text beyond them is reported as not read |
-
-Haiku is called through the `haiku` model alias, so the model follows your
-provider setup (for example Bedrock).
-
-## Privacy
-
-`~/.claude/mods-logs/input-router.log` holds one line per decision: the tool
-name, sizes, chunk counts and timings. It never holds results, arguments or
-commands. The text of a result and your last request do go to Haiku, the same
-account that already saw them.
-
-## Files
-
-- `hooks/register.tsx`: hooks, Haiku calls, PDF path
-- `hooks/trim.ts`: JSON trim, chunking, saved path check
-- `tests/router.test.ts`: `claude plugin test mods/input-router`
+```
+claude plugin test mods/input-router
+```

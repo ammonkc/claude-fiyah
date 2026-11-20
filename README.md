@@ -57,7 +57,7 @@ Five mods that keep cost, context and model choice in check. They are hand ports
 | [handoff-nudge](mods/handoff-nudge/README.md) | A band above the prompt once context passes 60% of the window. It fills `/handoff <focus>` for the handoff mod and follows its progress. | thitiwats/claude-mods (MIT) |
 | [model-router](mods/model-router/README.md) | A Haiku judge picks each subagent's model at spawn. An explicit model is never overridden, and inference profile ARNs are mapped to tiers. | michaelzwiener/claude-mods, from davila7/claude-code-templates (MIT) |
 | [effort-optimizer](mods/effort-optimizer/README.md) | Suggests a reasoning effort level for the main chat in a band. Apply holds it for this chat only and never changes the saved setting. | michaelzwiener/claude-mods (no license in repo) |
-| [input-router](mods/input-router/README.md) | Replaces oversized MCP results and long PDFs with Haiku notes, keeping the raw output on disk. Read and Bash are left to context-mode. | michaelzwiener/claude-mods (no license in repo) |
+| [input-router](mods/input-router/README.md) | Adds a heading outline beside large MCP documents (the result is never changed, so context-mode still indexes it whole), with opt-in Haiku synthesis per tool. Long PDFs are read by Haiku. | michaelzwiener/claude-mods (no license in repo) |
 
 model-router cannot change a subagent's model while `CLAUDE_CODE_SUBAGENT_MODEL` is set, because a session wide subagent model outranks any hook. `/model-router` warns when that is the case.
 

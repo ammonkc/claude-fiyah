@@ -2,6 +2,20 @@
 
 All notable changes to the mods in this repository are recorded here. This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries are added when a mod's version is bumped. Other mods will get entries the next time they are bumped.
 
+## input-router 0.2.0 (2026-11-19)
+
+### Changed
+
+- MCP results are never replaced. A large result that reads as a document gets a heading outline in the call's context instead, so context-mode still indexes the full result and Claude's first search can name a real section.
+- Haiku synthesis of MCP results is opt-in per tool (`synthesizeTools`) and rides beside the result, never in its place.
+- Text is read from every MCP result shape (strings, content blocks, objects). 0.1.0 skipped object results without a word, so it never ran on Atlassian results.
+- Every skip is logged with its reason (shape, size, kind).
+- The MCP hook moved from `tool.call` to `tool.run` with a `/^mcp__/` matcher. A `tool.call` hook only ever saw context-mode's search pointer, and a hook with no matcher turned off backgrounding for every tool.
+
+### Removed
+
+- The JSON field trim, the summarize and replace path, and the saved copies under `results/`. The `mcpThresholdChars` option is replaced by `outlineMinChars`.
+
 ## handoff 0.1.0, handoff-nudge 0.1.0, model-router 0.1.0, effort-optimizer 0.1.0, input-router 0.1.0 (2026-11-19)
 
 ### Added

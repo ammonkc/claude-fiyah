@@ -1,23 +1,37 @@
 {
   "name": "input-router",
-  "version": "0.1.0",
-  "description": "Big MCP connector results and long PDFs are read by Haiku first; Claude gets short notes and the path of the full text. Plain Read and Bash are left alone (context-mode owns those). /input-router [on|off|status].",
-  "author": { "name": "ammonkc" },
+  "version": "0.2.0",
+  "description": "Large MCP results that read as documents (pages, issues, threads) get a heading outline beside them, so Claude's first search lands on a real section. The result itself is never changed, so context-mode still indexes it whole. Opt-in Haiku synthesis per tool. Long PDFs are read by Haiku. /input-router [on|off|status].",
+  "author": {
+    "name": "ammonkc"
+  },
   "license": "MIT",
   "repository": "https://github.com/ammonkc/claude-fiyah",
-  "keywords": ["mod", "function-hooks", "mcp", "pdf", "tokens"],
+  "keywords": [
+    "mod",
+    "function-hooks",
+    "mcp",
+    "pdf",
+    "tokens"
+  ],
   "userConfig": {
     "enabled": {
       "type": "boolean",
       "title": "Enabled",
-      "description": "Route big MCP results and long PDFs through Haiku. /input-router off turns it off for good until /input-router on.",
+      "description": "Add MCP outlines and read long PDFs with Haiku. /input-router off turns it off until /input-router on.",
       "default": true
     },
-    "mcpThresholdChars": {
+    "outlineMinChars": {
       "type": "number",
-      "title": "MCP result limit (characters)",
-      "description": "An MCP result at or over this size is trimmed, then read by Haiku. Smaller results pass through untouched.",
-      "default": 16000
+      "title": "Outline from (characters)",
+      "description": "An MCP result at or over this size that reads as a document gets an outline. 4096 matches context-mode's own trigger, below which it keeps the result as is.",
+      "default": 4096
+    },
+    "synthesizeTools": {
+      "type": "string",
+      "title": "Haiku synthesis for",
+      "description": "Comma separated MCP tool names or parts of names (for example getConfluenceContent, getJiraIssue), or * for all. A matching result also gets a short Haiku synthesis for your request beside it. Empty turns synthesis off.",
+      "default": ""
     },
     "pdfPages": {
       "type": "number",
@@ -28,7 +42,7 @@
     "maxChunks": {
       "type": "number",
       "title": "Most Haiku chunks",
-      "description": "Each chunk is about 100,000 characters read in parallel. Text past the last chunk is not read, and the notes say how much.",
+      "description": "PDF text is read by Haiku in chunks of about 100,000 characters in parallel. Text past the last chunk is not read, and the notes say how much.",
       "default": 6
     }
   }

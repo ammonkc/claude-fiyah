@@ -1,31 +1,31 @@
 import type { EngineInterface, Register } from 'claude-code'
 
-import { hash, isCoreSaved, middle, newStats, notedPath, parseJson, render, safeName, split, textOf, trimValue, wordsOf } from './trim'
+import { inspect, outlineNote, wantsSynthesis } from './outline'
+import { hash, isCoreSaved, middle, notedPath, safeName, shapeOf, split, textOf } from './text'
 
 const NAME = 'input-router'
 const MODEL = 'haiku'
 const CHUNK_CHARS = 100_000
 const REQUEST_CHARS = 12_000
-const ARGS_CHARS = 1_500
 const CALL_MS = 90_000
+const SYNTH_MS = 60_000
 const NOTES_TOKENS = 2_500
+const SYNTH_TOKENS = 700
 const NOTE_MAX = 12_000
 const FILE_READ_MAX = 4 * 1024 * 1024
 const KEEP_DAYS = 7
 const PDF_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
 
-// Tools whose exact output the next step depends on, or that are already sandboxed or small.
+// Tools whose output is already sandboxed, or a page snapshot the next step reads exactly.
 const SKIP_SERVER = /^mcp__(plugin_context-mode_|context-mode|plugin-authoring|plugin_plugin-authoring|Claude_Browser|claude-in-chrome|Control_Chrome|computer-use|playwright)/
 const SKIP_TOOL = /__(read_page|find|screenshot|snapshot|read_me|guide)$/i
 
-const MCP_SYSTEM = [
-  'You help another AI assistant by reading a large tool result it asked for. The assistant sees only your notes, not the raw data.',
-  'Keep what its task needs and drop the rest.',
-  '- Copy values exactly: names, ids, keys, emails, numbers, dates, URLs. Never invent, guess or round.',
-  '- When the task needs a list of records, keep every record that fits, one compact line each, with the fields the task needs plus the record id and name.',
-  '- When the task is unclear, keep one compact line per record with its id, its name and its most telling fields.',
-  '- Copy paging and count fields by exact name and value (for example total: 120, nextPageToken). Never reword them.',
-  '- No preamble and no closing summary. The last line is "Not kept:" and then the kinds of fields you left out, in a few words.',
+const SYNTH_SYSTEM = [
+  'You help another AI assistant with a long document a tool returned. The assistant also has the full document; your synthesis is read first, as a head start.',
+  'Answer what its task needs from this document in at most 250 words.',
+  '- Copy names, ids, numbers, dates and rules exactly. Never invent, guess or round.',
+  '- When the document does not answer the task, say so in one line.',
+  '- No preamble. End with "Check exact values in the full result."',
 ].join('\n')
 
 const PDF_SYSTEM = [
@@ -36,11 +36,10 @@ const PDF_SYSTEM = [
   '- No preamble and no closing summary. The last line is "Not kept:" and then what you left out, in a few words.',
 ].join('\n')
 
-type Cfg = { threshold: number; pdfPages: number; maxChunks: number; isEnabled: boolean }
-type Task = { user: string }
+type Cfg = { minChars: number; synthesize: string; pdfPages: number; maxChunks: number; isEnabled: boolean }
+type Opts = { signal?: AbortSignal }
 
-let routed = 0
-let passed = 0
+const tally = { outlined: 0, synthesized: 0, skipped: 0, pdf: 0 }
 
 function fmt(n: number): string {
   return n.toLocaleString('en-US')
@@ -59,7 +58,7 @@ async function homeOf($: EngineInterface): Promise<string> {
   }
 }
 
-/** One log line per decision: names, sizes and timings only, never content, arguments or commands. */
+/** One log line per decision: names, shapes, sizes and timings only, never content or arguments. */
 async function log($: EngineInterface, kind: string, line: string): Promise<void> {
   try {
     const home = await homeOf($)
@@ -87,7 +86,7 @@ async function isOn($: EngineInterface, cfg: Cfg): Promise<boolean> {
 }
 
 /** The last real request from the person (tool results and empty rows skipped), cut to head and tail. */
-async function purpose($: EngineInterface, agentId: string | undefined): Promise<Task> {
+async function purpose($: EngineInterface, agentId: string | undefined): Promise<string> {
   try {
     const rows = await $.session.messages(agentId ? { agentId } : {})
     if (Array.isArray(rows)) {
@@ -95,51 +94,30 @@ async function purpose($: EngineInterface, agentId: string | undefined): Promise
         const row = rows[i]!
         if (row.role !== 'user' || (row.toolResults && row.toolResults.length > 0)) continue
         const text = middle(row.text ?? '', REQUEST_CHARS)
-        if (text) return { user: text }
+        if (text) return text
       }
     }
   } catch {
-    // No transcript: the arguments alone say what the call was for.
+    // No transcript: the document alone.
   }
-  return { user: '' }
+  return ''
 }
 
-type Opts = { signal?: AbortSignal }
-
-/** Haiku notes for each part, in parallel. Null when any part fails: the caller then passes the original through. */
-async function notesFor($: EngineInterface, system: string, head: string, parts: string[], opts: Opts): Promise<string[] | null> {
-  const asked = await Promise.all(
-    parts.map(async (part, i) => {
-      try {
-        const prompt = `${head}\n\nThis is part ${i + 1} of ${parts.length}.\n\n<data>\n${part}\n</data>`
-        const r = await $.model.complete({ model: MODEL, system, prompt, maxTokens: NOTES_TOKENS, timeoutMs: CALL_MS }, opts)
-        return r.isAnswered && r.text.trim() ? r.text.trim() : null
-      } catch {
-        return null
-      }
-    }),
-  )
-  return asked.every(x => x !== null) ? (asked as string[]) : null
+async function ask($: EngineInterface, system: string, prompt: string, maxTokens: number, timeoutMs: number, opts: Opts): Promise<string | null> {
+  try {
+    const r = await $.model.complete({ model: MODEL, system, prompt, maxTokens, timeoutMs }, opts)
+    return r.isAnswered && r.text.trim() ? r.text.trim() : null
+  } catch {
+    return null
+  }
 }
 
-/** The note's body: notes per part, with the unread remainder said plainly. */
-function frame(title: string, parts: string[], notes: string[], unread: number, where: string): string {
-  const body = notes.map((n, i) => (notes.length > 1 ? `--- part ${i + 1} of ${notes.length} ---\n${n}` : n)).join('\n\n')
-  return [
-    `[${NAME}] ${title} (${notes.length} chunk${notes.length === 1 ? '' : 's'}; ${fmt(unread)} chars not read).`,
-    'These are notes written for your task, not the raw data. Copy values from them as given; do not re-run the call just to check them.',
-    where,
-    '',
-    body,
-  ].join('\n')
-}
+// ---------- MCP: the result always goes on unchanged; a map (and, when asked, a synthesis) rides beside it ----------
 
-// ---------- MCP ----------
-
-type Answered = { result?: unknown; deny?: unknown; isError?: unknown }
+type Ran = { result?: unknown; deny?: unknown; isError?: unknown; context?: readonly string[] }
 
 /** The core-saved file behind an oversize note, when it really is one of core's own tool-results files. */
-async function coreFile($: EngineInterface, home: string, note: string): Promise<{ path: string; text: string } | null> {
+async function coreFile($: EngineInterface, home: string, note: string): Promise<string | null> {
   const path = notedPath(note)
   if (!path || !home || path.split('/').includes('..')) return null
   try {
@@ -147,80 +125,60 @@ async function coreFile($: EngineInterface, home: string, note: string): Promise
     const st = await $.fs.stat(path, { resolve: true })
     if (!root || !st.realPath || st.kind !== 'file' || st.size > FILE_READ_MAX) return null
     if (!isCoreSaved(st.realPath, root)) return null
-    return { path: st.realPath, text: String(await $.fs.read(st.realPath)) }
+    return String(await $.fs.read(st.realPath))
   } catch {
     return null
   }
 }
 
-async function routeMcp(
-  $: EngineInterface,
-  e: Record<string, unknown>,
-  tool: string,
-  ran: Answered,
-  cfg: Cfg,
-  opts: Opts,
-): Promise<{ result: string } | null> {
-  const got = textOf(ran.result)
-  if (!got) return null
-  const home = await homeOf($)
-  let raw = got.join('\n')
-  let file = ''
-  const t0 = await $.clock.now()
+/** What to add to the model's view of this result, or null to add nothing. Never changes the result. */
+async function noteFor($: EngineInterface, e: Record<string, unknown>, tool: string, ran: Ran, cfg: Cfg, opts: Opts): Promise<string | null> {
+  const shape = shapeOf(ran.result)
+  let raw = textOf(ran.result)
+  if (raw === undefined) {
+    tally.skipped++
+    await log($, 'mcp', `skip ${tool} shape=${shape} no text`)
+    return null
+  }
   if (raw.length < NOTE_MAX && raw.includes('saved to')) {
-    const core = await coreFile($, home, raw)
-    if (core) {
-      file = core.path
-      raw = core.text
-    }
+    const saved = await coreFile($, await homeOf($), raw)
+    if (saved !== null) raw = saved
   }
-  if (raw.length < cfg.threshold) {
-    passed++
+  if (raw.length < cfg.minChars) {
+    tally.skipped++
+    await log($, 'mcp', `skip ${tool} shape=${shape} ${raw.length} chars under ${cfg.minChars}`)
     return null
   }
-  if (!home) return null
 
-  // Keep the raw result, unless core already did.
-  const data = parseJson(raw)
-  if (!file) {
-    file = `${home}/.claude/mods-logs/${NAME}/results/${new Date(t0).toISOString().replace(/[:.]/g, '-')}-${safeName(tool)}.${data === undefined ? 'txt' : 'json'}`
-    await $.fs.write(file, raw)
-  }
-  const where = `Full raw result (read it with offset and limit, or grep it, when you need exact text): ${file}`
-
-  const reserved = new Set(['tool', 'tool_use_id', 'agentId', 'requestMeta', 'consent'])
-  const args = JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k]) => !reserved.has(k)))).slice(0, ARGS_CHARS)
-  const task = await purpose($, typeof e.agentId === 'string' ? e.agentId : undefined)
-  const words = wordsOf(`${task.user} ${args}`)
-
-  // Plain code first: drop fields nobody uses. No text is cut.
-  const stats = newStats()
-  let text = raw
-  if (data !== undefined) text = render(trimValue(data, words, stats))
-  const removed = [...stats.removed].sort().join(', ')
-  if (text.length < cfg.threshold) {
-    if (text.length >= raw.length) return null
-    await log($, 'mcp', `trim ${tool} ${raw.length}->${text.length} chars ${Date.now() - t0}ms`)
-    routed++
-    return {
-      result: `[${NAME}] ${tool}: dropped noise fields (${removed || 'none by name'}${stats.unpacked ? `, unpacked ${stats.unpacked} JSON text field(s)` : ''}); nothing else changed. ${where}\n\n${text}`,
-    }
-  }
-
-  const all = split(text, CHUNK_CHARS)
-  const parts = all.slice(0, cfg.maxChunks)
-  const unread = all.slice(cfg.maxChunks).reduce((n, p) => n + p.length, 0)
-  const head = [`Tool: ${tool}`, `Arguments: ${args}`, task.user ? `The person's last request:\n${task.user}` : 'The person gave no request text.'].join('\n')
-  const notes = await notesFor($, MCP_SYSTEM, head, parts, opts)
-  if (!notes) {
-    await log($, 'mcp', `haiku failed ${tool} ${raw.length} chars, original sent`)
+  const doc = inspect(raw)
+  const synth = wantsSynthesis(tool, cfg.synthesize)
+  if (doc.kind !== 'prose' && !synth) {
+    tally.skipped++
+    await log($, 'mcp', `skip ${tool} shape=${shape} ${raw.length} chars kind=${doc.kind}${doc.kind === 'records' ? ` (${doc.records})` : ''}`)
     return null
   }
-  const reply = frame(`Notes by Haiku from ${parts.length} chunks of ${tool}`, parts, notes, unread, where)
-  if (reply.length >= raw.length) return null
-  routed++
-  await log($, 'mcp', `haiku ${tool} ${raw.length}->${reply.length} chars ${parts.length} chunks ${unread} unread ${(await $.clock.now()) - t0}ms`)
-  return { result: reply }
+
+  const parts: string[] = []
+  if (doc.kind === 'prose') {
+    parts.push(outlineNote(tool, raw.length, doc))
+    tally.outlined++
+  }
+  if (synth) {
+    const t0 = await $.clock.now()
+    const task = await purpose($, typeof e.agentId === 'string' ? e.agentId : undefined)
+    const source = middle(doc.kind === 'prose' && doc.body ? doc.body : raw, CHUNK_CHARS)
+    const prompt = `Tool: ${tool}\n${task ? `The person's last request:\n${task}` : 'The person gave no request text.'}\n\n<document>\n${source}\n</document>`
+    const text = await ask($, SYNTH_SYSTEM, prompt, SYNTH_TOKENS, SYNTH_MS, opts)
+    const ms = (await $.clock.now()) - t0
+    if (text) {
+      parts.push(`[input-router] Synthesis by Haiku for your task (lossy; the full result is the source of truth):\n${text}`)
+      tally.synthesized++
+    }
+    await log($, 'mcp', `synth ${tool} ${text ? 'ok' : 'failed'} ${ms}ms`)
+  }
+  if (parts.length === 0) return null
+  await log($, 'mcp', `note ${tool} shape=${shape} ${raw.length} chars kind=${doc.kind} headings=${doc.headings.length}`)
+  return parts.join('\n\n')
 }
 
 // ---------- PDF ----------
@@ -266,15 +224,21 @@ async function routePdf($: EngineInterface, path: string, cfg: Cfg, agentId: str
   const parts = all.slice(0, cfg.maxChunks)
   const unread = all.slice(cfg.maxChunks).reduce((n, p) => n + p.length, 0)
   const task = await purpose($, agentId)
-  const head = [`Document: ${path.split('/').pop()} (${total} pages)`, task.user ? `The person's last request:\n${task.user}` : 'The person gave no request text.'].join('\n')
-  const notes = await notesFor($, PDF_SYSTEM, head, parts, opts)
-  if (!notes) {
+  const head = [`Document: ${path.split('/').pop()} (${total} pages)`, task ? `The person's last request:\n${task}` : 'The person gave no request text.'].join('\n')
+  const notes = await Promise.all(parts.map((part, i) => ask($, PDF_SYSTEM, `${head}\n\nThis is part ${i + 1} of ${parts.length}.\n\n<data>\n${part}\n</data>`, NOTES_TOKENS, CALL_MS, opts)))
+  if (notes.some(n => n === null)) {
     await log($, 'pdf', `haiku failed ${total} pages, plain Read sent`)
     return null
   }
-  const where = `Extracted text of all ${total} pages (read it with offset and limit for exact text; or Read the PDF itself with pages, ${cfg.pdfPages} pages or fewer per call pass through untouched): ${textFile}`
-  const content = frame(`Notes by Haiku on ${path.split('/').pop()}, ${total} pages`, parts, notes, unread, where)
-  routed++
+  const body = notes.map((n, i) => (notes.length > 1 ? `--- part ${i + 1} of ${notes.length} ---\n${n}` : n)).join('\n\n')
+  const content = [
+    `[${NAME}] Notes by Haiku on ${path.split('/').pop()}, ${total} pages (${notes.length} chunk${notes.length === 1 ? '' : 's'}; ${fmt(unread)} chars not read).`,
+    'These are notes written for your task, not the document. Copy values from them as given.',
+    `Extracted text of all ${total} pages (read it with offset and limit for exact text; or Read the PDF itself with pages, ${cfg.pdfPages} pages or fewer per call pass through untouched): ${textFile}`,
+    '',
+    body,
+  ].join('\n')
+  tally.pdf++
   await log($, 'pdf', `haiku ${total} pages ${text.length}->${content.length} chars ${parts.length} chunks ${(await $.clock.now()) - t0}ms`)
   const numLines = content.split('\n').length
   return { result: { type: 'text' as const, file: { filePath: path, content, numLines, startLine: 1, totalLines: numLines } } }
@@ -285,19 +249,18 @@ async function routePdf($: EngineInterface, path: string, cfg: Cfg, agentId: str
 export const register: Register = (on, options) => {
   const cfg: Cfg = {
     isEnabled: options.enabled !== false,
-    threshold: Number(options.mcpThresholdChars ?? 16_000),
+    minChars: Math.max(1, Number(options.outlineMinChars ?? 4_096)),
+    synthesize: String(options.synthesizeTools ?? ''),
     pdfPages: Number(options.pdfPages ?? 5),
     maxChunks: Math.max(1, Number(options.maxChunks ?? 6)),
   }
 
   on('session.start', async ($, e, next) => {
     try {
-      await $.command.register({ name: NAME, description: 'Turn the MCP and PDF input router on or off', argumentHint: '[on|off|status]' })
+      await $.command.register({ name: NAME, description: 'Turn the MCP outline and PDF reader on or off', argumentHint: '[on|off|status]' })
       const home = await homeOf($)
       if (home) {
-        for (const dir of ['results', 'text']) {
-          await $.process.run(['/usr/bin/find', `${home}/.claude/mods-logs/${NAME}/${dir}`, '-type', 'f', '-mtime', `+${KEEP_DAYS}`, '-delete'], { timeoutMs: 15_000 })
-        }
+        await $.process.run(['/usr/bin/find', `${home}/.claude/mods-logs/${NAME}/text`, '-type', 'f', '-mtime', `+${KEEP_DAYS}`, '-delete'], { timeoutMs: 15_000 })
       }
     } catch (err) {
       await log($, 'mod', `session start failed ${errName(err)}`)
@@ -313,22 +276,27 @@ export const register: Register = (on, options) => {
     return {
       text: [
         `${NAME} is ${live ? 'on' : 'off'}${cfg.isEnabled ? '' : ' (disabled in the mod settings)'}.`,
-        `MCP results over ${fmt(cfg.threshold)} chars are trimmed, then read by Haiku in up to ${cfg.maxChunks} chunks. PDFs over ${cfg.pdfPages} pages are read by Haiku.`,
-        `This session: ${routed} routed, ${passed} MCP results under the limit. Log: ~/.claude/mods-logs/${NAME}.log`,
+        `MCP results over ${fmt(cfg.minChars)} chars that read as documents get an outline beside them; the result itself is never changed.`,
+        `Haiku synthesis: ${cfg.synthesize.trim() ? cfg.synthesize : 'off (set synthesizeTools to turn it on for chosen tools)'}. PDFs over ${cfg.pdfPages} pages are read by Haiku.`,
+        `This session: ${tally.outlined} outlined, ${tally.synthesized} synthesized, ${tally.skipped} skipped, ${tally.pdf} PDFs. Log: ~/.claude/mods-logs/${NAME}.log`,
       ].join('\n'),
     }
   })
 
-  on('tool.call', async ($, e, next) => {
+  // tool.run, not tool.call: it runs inside PostToolUse, so it sees the raw result before context-mode
+  // swaps it for a search pointer, and its `context` rides along to the model. The matcher keeps it off
+  // every other tool, since a tool.run hook that may match a tool turns off that tool's backgrounding.
+  on('tool.run', { tool: /^mcp__/ }, async ($, e, next) => {
     const tool = String(e.tool)
-    if (!tool.startsWith('mcp__') || SKIP_SERVER.test(tool) || SKIP_TOOL.test(tool) || !(await isOn($, cfg))) return next(e)
+    if (SKIP_SERVER.test(tool) || SKIP_TOOL.test(tool) || !(await isOn($, cfg))) return next(e)
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError) return ran
-    // The tool has run: from here a failure hands back its result, never a second run.
+    // The tool has run: from here a failure hands back its result as it was, never a second run.
     try {
-      return (await routeMcp($, e as unknown as Record<string, unknown>, tool, ran, cfg, { signal: next.signal })) ?? ran
+      const note = await noteFor($, e as unknown as Record<string, unknown>, tool, ran, cfg, { signal: next.signal })
+      return note ? { ...ran, context: [...(ran.context ?? []), note] } : ran
     } catch (err) {
-      await log($, 'mcp', `failed ${tool} ${errName(err)}, original sent`)
+      await log($, 'mcp', `failed ${tool} ${errName(err)}, result sent as it was`)
       return ran
     }
   }).catch(($, e, next) => next(e))
