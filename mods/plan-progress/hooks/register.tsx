@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, EngineInterface, Register, TurnStepChunk } from 'claude-code'
 
-import type { AgentRun, Plan, PlanStage, PlanState, PlanStep, Prefs, Speed, StepStatus, VersionState } from '../types'
+import type { AgentRun, Plan, PlanStage, PlanState, PlanStep, Prefs, Speed, StepStatus } from '../types'
 
 const TOOL = 'mcp__plan-progress__plan_progress'
 const plans = atom({ plugin: 'plan-progress', key: 'plans' } as const, [])
@@ -13,6 +13,8 @@ const tick = atom({ plugin: 'plan-progress', key: 'tick' } as const, 0)
 const speed = atom({ plugin: 'plan-progress', key: 'speed' } as const, { rate: null, isLive: false } as Speed)
 // the settings window's choices as the session holds them (null until the session starts)
 const prefs = atom({ plugin: 'plan-progress', key: 'prefs' } as const, null as Prefs | null)
+// the turn whose open bars Stop already sent back once: a turn is asked about its bars at most one time
+const nudgedTurn = atom({ plugin: 'plan-progress', key: 'nudgedTurn' } as const, '')
 const STRIP_H = 16
 const STRIP_GAP = 2
 // rows of strips per bar, the "+N more" row included: the band above the prompt has room for about 300 px
@@ -1186,11 +1188,6 @@ function finish(m: Meter, model: string, outputTokens: number, t: number, hasSer
 // desktop draws a footer Button as, where a font might pick a coloured emoji. The footer draws no pictures, only text
 // and Buttons, so an icon there is a character
 const GEAR_TEXT = '⚙\uFE0E'
-// a newer release out: a blue mark in the ⚙ Button. The desktop draws a footer Button's label alone, in the chip's grey,
-// puts the Buttons before the text and squeezes the whole to 3ch when the footer is short of room, so only the chip is
-// sure to show: there the mark is an emoji in the label, which keeps its own colour (a small blue diamond). The
-// terminal draws a Button's children, so there it is a ● in the accent colour
-const GEAR_NEWS = '⚙\uFE0E \u{1F539}'
 const speedLabel = (s: Speed) => `⚡ ${(s.rate === null ? '–' : s.rate < 10 ? s.rate.toFixed(1) : String(Math.round(s.rate))).padStart(3, FIGURE_SPACE)} tok/s`
 
 // one tinted strip per agent: state colour, name, what it does now and for how long; not a progress bar
@@ -1210,9 +1207,34 @@ const foldChip = (isFolded: boolean) =>
 
 // claude-haiku-4-5-20251001 -> haiku 4.5, claude-sonnet-4-20250514 -> sonnet 4 (a date is no minor version); an
 // alias stays as given
+// A Bedrock inference profile (arn:aws:bedrock:...:application-inference-profile/<id>) names no model: the family
+// the session maps it to in ANTHROPIC_DEFAULT_*_MODEL gives it a name, and any other ARN shows the tail of its id
+const modelFamilies = new Map<string, string>()
+async function readModelFamilies($: EngineInterface) {
+  // $.env.get takes a literal name, so each variable is read by its own call; the first mapping of an id stands, so a
+  // small fast model set to the Haiku profile says the same
+  const ids = await Promise.all([
+    Promise.resolve().then(() => $.env.get('ANTHROPIC_DEFAULT_HAIKU_MODEL')).catch(() => undefined),
+    Promise.resolve().then(() => $.env.get('ANTHROPIC_DEFAULT_SONNET_MODEL')).catch(() => undefined),
+    Promise.resolve().then(() => $.env.get('ANTHROPIC_DEFAULT_OPUS_MODEL')).catch(() => undefined),
+    Promise.resolve().then(() => $.env.get('ANTHROPIC_SMALL_FAST_MODEL')).catch(() => undefined),
+  ])
+  const families = ['Haiku', 'Sonnet', 'Opus', 'Haiku']
+  modelFamilies.clear()
+  ids.forEach((id, i) => {
+    if (id && !modelFamilies.has(id)) modelFamilies.set(id, families[i] ?? '')
+  })
+}
 const modelName = (m: string) => {
+  const family = modelFamilies.get(m)
+  if (family) return family
   const r = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(m)
-  return r ? `${r[1]} ${r[2]}${r[3] ? '.' + r[3] : ''}` : m
+  if (r) return `${r[1]} ${r[2]}${r[3] ? '.' + r[3] : ''}`
+  if (m.startsWith('arn:')) {
+    const tail = m.split(/[/:]/).filter(Boolean).at(-1) ?? m
+    return tail.length > 12 ? `…${tail.slice(-11)}` : tail
+  }
+  return m
 }
 
 // an MCP tool's wire name is mcp__<server>__<tool>; the server part is the same on every call, so only the tool
@@ -1656,6 +1678,8 @@ let isFrameBusy = false
 // a bar twinkles only while Claude works on it; one waiting on the person or left open after the turn stands still
 let isTurnLive = false
 let frames: { cancel: () => void } | null = null
+// the one-second clock that follows the session: kept so a second session.start does not leave two running
+let sessionClock: { cancel: () => void } | null = null
 // when the engine last refused frames of this band for good; the frames rest a second before they try again
 let refusedAt: number | null = null
 // refused frames in a row: one sent between a redraw and its commit is refused once and the next goes through
@@ -2200,10 +2224,8 @@ const hasLeft = (p: Plan, now: number) => {
 // two options of /config (twinkle, doneBarSeconds) it sets the way the menu does, which reloads the mod
 const SOUNDS = 'sounds'
 const SPEED_SHOWN = 'speedShown'
-const UPDATE_CHECK = 'updateCheck'
 let isSoundOn = true
 let isSpeedShown = true
-let isUpdateCheckOn = true
 const SETTINGS = 'settings'
 // the seconds a finished bar stays that the window offers; /config takes any
 const STAYS = [10, 30, 60]
@@ -2211,7 +2233,7 @@ const STAYS = [10, 30, 60]
 // the window's words in the 35 languages the desktop app speaks, fields in the order of WORD_KEYS: two section heads,
 // a title and a line for each setting, the two states of a switch, the seconds (`{n}`); `{v}` is the footer's figure
 const WORD_KEYS = ['g1', 'g2', 'fx', 'fxd', 'sp', 'spd', 'ac', 'acd', 'st', 'std', 'sn', 'snd', 'enabled', 'disabled', 'secs'] as const
-type Words = Record<(typeof WORD_KEYS)[number] | (typeof VERSION_KEYS)[number], string>
+type Words = Record<(typeof WORD_KEYS)[number], string>
 const WORDS: Record<string, string> = {
   en: 'Appearance|Behavior|Effects|Twinkling dots in the bar and the agent rows|Speed|Show {v} in the footer|Auto-close|A finished bar leaves on its own|Stays for|How long a finished bar stays|Sounds|A chime on an error, a question and the finish|On|Off|{n} s',
   ru: 'Вид|Поведение|Эффекты|Мерцание точек в полосе и строках агентов|Скорость|Показывать {v} в футере|Автозакрытие|Готовая полоса уходит сама|Время показа|Сколько готовая полоса видна|Звуки|Сигнал при ошибке, вопросе и финише|Вкл|Выкл|{n} с',
@@ -2288,51 +2310,9 @@ const LANG_NAMES: Record<string, string> = {
   ha: 'hausa',
   sw: 'swahili,kiswahili',
 }
-// the version row's words, in the same languages and the same way: its section head, its title, the line under it at
-// rest and in each state of a check or an update (`{v}` a version, `{e}` what went wrong, as the network or the CLI
-// says it), the link to the release notes and the two buttons a newer release offers
-const VERSION_KEYS = ['g3', 'ver', 'verd', 'checking', 'latest', 'avail', 'notes', 'upd', 'later', 'updating', 'updated', 'restart', 'failc', 'failu', 'folder', 'uc', 'ucd'] as const
-const VERSION_WORDS: Record<string, string> = {
-  en: 'About|Version|Press it to look for a newer release|Checking…|This is the latest version|Version {v} is out|What’s new|Update|Later|Updating to {v}…|Updated to {v}|Restart Claude Code to finish the update|Could not check: {e}|Could not update: {e}|Installed from a folder: it updates with the folder|Check for updates|Look for a new release every 6 hours',
-  ru: 'О моде|Версия|Нажмите, чтобы проверить новую версию|Проверяю…|Это последняя версия|Вышла версия {v}|Что нового|Обновить|Позже|Обновляю до {v}…|Обновлено до {v}|Перезапустите Claude Code, чтобы закончить обновление|Не удалось проверить: {e}|Не удалось обновить: {e}|Установлен из папки: обновляется вместе с ней|Проверять обновления|Искать новую версию раз в 6 часов',
-  uk: 'Про мод|Версія|Натисніть, щоб перевірити нову версію|Перевіряю…|Це остання версія|Вийшла версія {v}|Що нового|Оновити|Пізніше|Оновлюю до {v}…|Оновлено до {v}|Перезапустіть Claude Code, щоб завершити оновлення|Не вдалося перевірити: {e}|Не вдалося оновити: {e}|Встановлено з теки: оновлюється разом із нею|Перевіряти оновлення|Шукати нову версію раз на 6 годин',
-  de: 'Über|Version|Klicken, um nach einer neuen Version zu suchen|Wird geprüft…|Das ist die neueste Version|Version {v} ist erschienen|Was ist neu|Aktualisieren|Später|Aktualisiere auf {v}…|Auf {v} aktualisiert|Claude Code neu starten, um das Update abzuschließen|Prüfung fehlgeschlagen: {e}|Update fehlgeschlagen: {e}|Aus einem Ordner installiert: wird mit ihm aktualisiert|Nach Updates suchen|Alle 6 Stunden nach einer neuen Version sehen',
-  fr: 'À propos|Version|Cliquez pour chercher une nouvelle version|Vérification…|C’est la dernière version|La version {v} est sortie|Nouveautés|Mettre à jour|Plus tard|Mise à jour vers {v}…|Mis à jour vers {v}|Redémarrez Claude Code pour terminer la mise à jour|Vérification impossible : {e}|Mise à jour impossible : {e}|Installé depuis un dossier : il se met à jour avec lui|Rechercher les mises à jour|Chercher une nouvelle version toutes les 6 heures',
-  es: 'Acerca de|Versión|Pulsa para buscar una versión nueva|Comprobando…|Esta es la última versión|Ya está la versión {v}|Novedades|Actualizar|Más tarde|Actualizando a {v}…|Actualizado a {v}|Reinicia Claude Code para terminar la actualización|No se pudo comprobar: {e}|No se pudo actualizar: {e}|Instalado desde una carpeta: se actualiza con ella|Buscar actualizaciones|Buscar una versión nueva cada 6 horas',
-  'es-419': 'Acerca de|Versión|Haz clic para buscar una versión nueva|Verificando…|Esta es la versión más reciente|Ya salió la versión {v}|Novedades|Actualizar|Más tarde|Actualizando a {v}…|Actualizado a {v}|Reinicia Claude Code para terminar la actualización|No se pudo verificar: {e}|No se pudo actualizar: {e}|Instalado desde una carpeta: se actualiza con ella|Buscar actualizaciones|Revisar si hay una versión nueva cada 6 horas',
-  'pt-BR': 'Sobre|Versão|Clique para procurar uma versão nova|Verificando…|Esta é a versão mais recente|Saiu a versão {v}|Novidades|Atualizar|Depois|Atualizando para {v}…|Atualizado para {v}|Reinicie o Claude Code para concluir a atualização|Não foi possível verificar: {e}|Não foi possível atualizar: {e}|Instalado de uma pasta: atualiza junto com ela|Procurar atualizações|Procurar uma versão nova a cada 6 horas',
-  it: 'Informazioni|Versione|Fai clic per cercare una nuova versione|Controllo…|Questa è l’ultima versione|È uscita la versione {v}|Novità|Aggiorna|Più tardi|Aggiornamento a {v}…|Aggiornato a {v}|Riavvia Claude Code per completare l’aggiornamento|Controllo non riuscito: {e}|Aggiornamento non riuscito: {e}|Installato da una cartella: si aggiorna con essa|Cerca aggiornamenti|Cerca una nuova versione ogni 6 ore',
-  nl: 'Over|Versie|Klik om naar een nieuwe versie te zoeken|Controleren…|Dit is de nieuwste versie|Versie {v} is uit|Wat is er nieuw|Bijwerken|Later|Bijwerken naar {v}…|Bijgewerkt naar {v}|Herstart Claude Code om de update af te ronden|Controleren mislukt: {e}|Bijwerken mislukt: {e}|Geïnstalleerd uit een map: wordt daarmee bijgewerkt|Naar updates zoeken|Elke 6 uur naar een nieuwe versie zoeken',
-  da: 'Om|Version|Klik for at søge efter en ny version|Tjekker…|Dette er den nyeste version|Version {v} er ude|Nyheder|Opdater|Senere|Opdaterer til {v}…|Opdateret til {v}|Genstart Claude Code for at afslutte opdateringen|Kunne ikke tjekke: {e}|Kunne ikke opdatere: {e}|Installeret fra en mappe: opdateres med den|Søg efter opdateringer|Søg efter en ny version hver 6. time',
-  sv: 'Om|Version|Klicka för att söka efter en ny version|Kontrollerar…|Det här är den senaste versionen|Version {v} har släppts|Nyheter|Uppdatera|Senare|Uppdaterar till {v}…|Uppdaterad till {v}|Starta om Claude Code för att slutföra uppdateringen|Kunde inte kontrollera: {e}|Kunde inte uppdatera: {e}|Installerad från en mapp: uppdateras med den|Sök efter uppdateringar|Sök efter en ny version var 6:e timme',
-  nb: 'Om|Versjon|Klikk for å se etter en ny versjon|Sjekker…|Dette er den nyeste versjonen|Versjon {v} er ute|Nyheter|Oppdater|Senere|Oppdaterer til {v}…|Oppdatert til {v}|Start Claude Code på nytt for å fullføre oppdateringen|Kunne ikke sjekke: {e}|Kunne ikke oppdatere: {e}|Installert fra en mappe: oppdateres med den|Se etter oppdateringer|Se etter en ny versjon hver 6. time',
-  fi: 'Tietoja|Versio|Napsauta etsiäksesi uutta versiota|Tarkistetaan…|Tämä on uusin versio|Versio {v} on julkaistu|Mitä uutta|Päivitä|Myöhemmin|Päivitetään versioon {v}…|Päivitetty versioon {v}|Käynnistä Claude Code uudelleen päivityksen viimeistelemiseksi|Tarkistus epäonnistui: {e}|Päivitys epäonnistui: {e}|Asennettu kansiosta: päivittyy sen mukana|Etsi päivityksiä|Etsi uutta versiota 6 tunnin välein',
-  tr: 'Hakkında|Sürüm|Yeni sürümü denetlemek için tıklayın|Denetleniyor…|Bu en son sürüm|{v} sürümü çıktı|Yenilikler|Güncelle|Sonra|{v} sürümüne güncelleniyor…|{v} sürümüne güncellendi|Güncellemeyi bitirmek için Claude Code’u yeniden başlatın|Denetlenemedi: {e}|Güncellenemedi: {e}|Bir klasörden kuruldu: onunla birlikte güncellenir|Güncellemeleri denetle|Her 6 saatte bir yeni sürüm ara',
-  id: 'Tentang|Versi|Klik untuk mencari versi baru|Memeriksa…|Ini versi terbaru|Versi {v} sudah keluar|Yang baru|Perbarui|Nanti|Memperbarui ke {v}…|Diperbarui ke {v}|Mulai ulang Claude Code untuk menyelesaikan pembaruan|Gagal memeriksa: {e}|Gagal memperbarui: {e}|Dipasang dari folder: diperbarui bersama folder itu|Periksa pembaruan|Cari versi baru setiap 6 jam',
-  fil: 'Tungkol|Bersyon|I-click para maghanap ng bagong bersyon|Sinusuri…|Ito ang pinakabagong bersyon|Labas na ang bersyon {v}|Ano ang bago|I-update|Mamaya|Ina-update sa {v}…|Na-update sa {v}|I-restart ang Claude Code para matapos ang update|Hindi masuri: {e}|Hindi ma-update: {e}|Naka-install mula sa folder: sumasabay ito sa folder|Tingnan ang mga update|Maghanap ng bagong bersyon tuwing 6 na oras',
-  vi: 'Giới thiệu|Phiên bản|Bấm để tìm phiên bản mới|Đang kiểm tra…|Đây là phiên bản mới nhất|Đã có phiên bản {v}|Có gì mới|Cập nhật|Để sau|Đang cập nhật lên {v}…|Đã cập nhật lên {v}|Khởi động lại Claude Code để hoàn tất cập nhật|Không kiểm tra được: {e}|Không cập nhật được: {e}|Cài từ một thư mục: cập nhật cùng thư mục đó|Kiểm tra cập nhật|Tìm phiên bản mới mỗi 6 giờ',
-  th: 'เกี่ยวกับ|เวอร์ชัน|คลิกเพื่อหาเวอร์ชันใหม่|กำลังตรวจสอบ…|นี่คือเวอร์ชันล่าสุด|เวอร์ชัน {v} ออกแล้ว|มีอะไรใหม่|อัปเดต|ภายหลัง|กำลังอัปเดตเป็น {v}…|อัปเดตเป็น {v} แล้ว|รีสตาร์ต Claude Code เพื่อให้อัปเดตเสร็จ|ตรวจสอบไม่ได้: {e}|อัปเดตไม่ได้: {e}|ติดตั้งจากโฟลเดอร์: อัปเดตไปพร้อมกับโฟลเดอร์|ตรวจหาอัปเดต|หาเวอร์ชันใหม่ทุก 6 ชั่วโมง',
-  ja: '情報|バージョン|クリックして新しいバージョンを確認|確認中…|最新バージョンです|バージョン {v} が公開されました|新機能|アップデート|後で|{v} にアップデート中…|{v} にアップデートしました|アップデートを完了するには Claude Code を再起動してください|確認できませんでした: {e}|アップデートできませんでした: {e}|フォルダーからインストール: フォルダーと一緒に更新されます|アップデートを確認|6 時間ごとに新しいバージョンを確認',
-  ko: '정보|버전|클릭하여 새 버전 확인|확인 중…|최신 버전입니다|{v} 버전이 나왔습니다|새로운 기능|업데이트|나중에|{v}(으)로 업데이트 중…|{v}(으)로 업데이트됨|업데이트를 마치려면 Claude Code를 다시 시작하세요|확인하지 못함: {e}|업데이트하지 못함: {e}|폴더에서 설치됨: 폴더와 함께 업데이트됩니다|업데이트 확인|6시간마다 새 버전 확인',
-  'zh-CN': '关于|版本|点击检查新版本|正在检查…|已是最新版本|版本 {v} 已发布|新功能|更新|稍后|正在更新到 {v}…|已更新到 {v}|重启 Claude Code 以完成更新|无法检查：{e}|无法更新：{e}|从文件夹安装：随文件夹一起更新|检查更新|每 6 小时查找新版本',
-  'zh-TW': '關於|版本|點擊檢查新版本|正在檢查…|已是最新版本|版本 {v} 已發佈|新功能|更新|稍後|正在更新到 {v}…|已更新到 {v}|重新啟動 Claude Code 以完成更新|無法檢查：{e}|無法更新：{e}|從資料夾安裝：隨資料夾一起更新|檢查更新|每 6 小時尋找新版本',
-  hi: 'जानकारी|संस्करण|नया संस्करण देखने के लिए क्लिक करें|जाँच हो रही है…|यह नवीनतम संस्करण है|संस्करण {v} आ गया है|नया क्या है|अपडेट करें|बाद में|{v} पर अपडेट हो रहा है…|{v} पर अपडेट हो गया|अपडेट पूरा करने के लिए Claude Code फिर से शुरू करें|जाँच नहीं हो सकी: {e}|अपडेट नहीं हो सका: {e}|फ़ोल्डर से इंस्टॉल: उसी के साथ अपडेट होता है|अपडेट जाँचें|हर 6 घंटे में नया संस्करण देखें',
-  bho: 'जानकारी|संस्करण|नया संस्करण देखे खातिर क्लिक करीं|जाँच होता…|ई सबसे नया संस्करण बा|संस्करण {v} आ गइल|नया का बा|अपडेट करीं|बाद में|{v} पर अपडेट होता…|{v} पर अपडेट हो गइल|अपडेट पूरा करे खातिर Claude Code फेर से चालू करीं|जाँच ना हो पाइल: {e}|अपडेट ना हो पाइल: {e}|फ़ोल्डर से इंस्टॉल: ओकरे संगे अपडेट होला|अपडेट जाँचीं|हर 6 घंटा में नया संस्करण देखीं',
-  mr: 'माहिती|आवृत्ती|नवी आवृत्ती पाहण्यासाठी क्लिक करा|तपासत आहे…|ही नवीनतम आवृत्ती आहे|आवृत्ती {v} आली आहे|नवीन काय|अपडेट करा|नंतर|{v} वर अपडेट करत आहे…|{v} वर अपडेट झाले|अपडेट पूर्ण करण्यासाठी Claude Code पुन्हा सुरू करा|तपासता आले नाही: {e}|अपडेट करता आले नाही: {e}|फोल्डरमधून इंस्टॉल: त्याच्यासोबत अपडेट होते|अपडेट तपासा|दर 6 तासांनी नवी आवृत्ती शोधा',
-  gu: 'માહિતી|સંસ્કરણ|નવું સંસ્કરણ જોવા ક્લિક કરો|તપાસી રહ્યું છે…|આ નવીનતમ સંસ્કરણ છે|સંસ્કરણ {v} આવી ગયું છે|નવું શું છે|અપડેટ કરો|પછી|{v} પર અપડેટ થઈ રહ્યું છે…|{v} પર અપડેટ થયું|અપડેટ પૂરું કરવા Claude Code ફરી શરૂ કરો|તપાસી શકાયું નહીં: {e}|અપડેટ થઈ શક્યું નહીં: {e}|ફોલ્ડરમાંથી ઇન્સ્ટોલ: તેની સાથે અપડેટ થાય છે|અપડેટ તપાસો|દર 6 કલાકે નવું સંસ્કરણ શોધો',
-  bn: 'সম্পর্কে|সংস্করণ|নতুন সংস্করণ খুঁজতে ক্লিক করুন|পরীক্ষা চলছে…|এটিই সর্বশেষ সংস্করণ|সংস্করণ {v} এসেছে|নতুন কী|আপডেট করুন|পরে|{v}-এ আপডেট হচ্ছে…|{v}-এ আপডেট হয়েছে|আপডেট শেষ করতে Claude Code আবার চালু করুন|পরীক্ষা করা যায়নি: {e}|আপডেট করা যায়নি: {e}|ফোল্ডার থেকে ইনস্টল: সেটির সঙ্গেই আপডেট হয়|আপডেট খুঁজুন|প্রতি 6 ঘণ্টায় নতুন সংস্করণ খুঁজুন',
-  ta: 'பற்றி|பதிப்பு|புதிய பதிப்பைத் தேட கிளிக் செய்யவும்|சரிபார்க்கிறது…|இதுவே சமீபத்திய பதிப்பு|பதிப்பு {v} வந்துவிட்டது|புதியவை|புதுப்பி|பிறகு|{v}-க்குப் புதுப்பிக்கிறது…|{v}-க்குப் புதுப்பிக்கப்பட்டது|புதுப்பிப்பை முடிக்க Claude Code-ஐ மீண்டும் தொடங்கவும்|சரிபார்க்க முடியவில்லை: {e}|புதுப்பிக்க முடியவில்லை: {e}|கோப்புறையிலிருந்து நிறுவப்பட்டது: அதனுடன் புதுப்பிக்கப்படும்|புதுப்பிப்புகளைச் சரிபார்|ஒவ்வொரு 6 மணி நேரமும் புதிய பதிப்பைத் தேடு',
-  te: 'గురించి|వెర్షన్|కొత్త వెర్షన్ కోసం క్లిక్ చేయండి|తనిఖీ చేస్తోంది…|ఇదే తాజా వెర్షన్|వెర్షన్ {v} వచ్చింది|కొత్తవి|అప్‌డేట్ చేయి|తర్వాత|{v}కి అప్‌డేట్ అవుతోంది…|{v}కి అప్‌డేట్ అయింది|అప్‌డేట్ పూర్తి చేయడానికి Claude Code‌ను మళ్లీ ప్రారంభించండి|తనిఖీ చేయలేకపోయింది: {e}|అప్‌డేట్ చేయలేకపోయింది: {e}|ఫోల్డర్ నుండి ఇన్‌స్టాల్: దానితో పాటే అప్‌డేట్ అవుతుంది|అప్‌డేట్‌ల కోసం చూడు|ప్రతి 6 గంటలకు కొత్త వెర్షన్ కోసం చూడు',
-  kn: 'ಕುರಿತು|ಆವೃತ್ತಿ|ಹೊಸ ಆವೃತ್ತಿ ಹುಡುಕಲು ಕ್ಲಿಕ್ ಮಾಡಿ|ಪರಿಶೀಲಿಸಲಾಗುತ್ತಿದೆ…|ಇದು ಇತ್ತೀಚಿನ ಆವೃತ್ತಿ|ಆವೃತ್ತಿ {v} ಬಂದಿದೆ|ಹೊಸದೇನು|ಅಪ್‌ಡೇಟ್ ಮಾಡಿ|ನಂತರ|{v}ಗೆ ಅಪ್‌ಡೇಟ್ ಆಗುತ್ತಿದೆ…|{v}ಗೆ ಅಪ್‌ಡೇಟ್ ಆಗಿದೆ|ಅಪ್‌ಡೇಟ್ ಮುಗಿಸಲು Claude Code ಅನ್ನು ಮತ್ತೆ ಆರಂಭಿಸಿ|ಪರಿಶೀಲಿಸಲಾಗಲಿಲ್ಲ: {e}|ಅಪ್‌ಡೇಟ್ ಮಾಡಲಾಗಲಿಲ್ಲ: {e}|ಫೋಲ್ಡರ್‌ನಿಂದ ಸ್ಥಾಪಿಸಲಾಗಿದೆ: ಅದರೊಂದಿಗೆ ಅಪ್‌ಡೇಟ್ ಆಗುತ್ತದೆ|ಅಪ್‌ಡೇಟ್ ಪರಿಶೀಲಿಸಿ|ಪ್ರತಿ 6 ಗಂಟೆಗೆ ಹೊಸ ಆವೃತ್ತಿ ಹುಡುಕಿ',
-  ml: 'വിവരം|പതിപ്പ്|പുതിയ പതിപ്പ് നോക്കാൻ ക്ലിക്ക് ചെയ്യുക|പരിശോധിക്കുന്നു…|ഇതാണ് ഏറ്റവും പുതിയ പതിപ്പ്|പതിപ്പ് {v} പുറത്തിറങ്ങി|പുതിയത് എന്ത്|അപ്‌ഡേറ്റ് ചെയ്യുക|പിന്നീട്|{v}-ലേക്ക് അപ്‌ഡേറ്റ് ചെയ്യുന്നു…|{v}-ലേക്ക് അപ്‌ഡേറ്റ് ചെയ്തു|അപ്‌ഡേറ്റ് പൂർത്തിയാക്കാൻ Claude Code വീണ്ടും തുടങ്ങുക|പരിശോധിക്കാനായില്ല: {e}|അപ്‌ഡേറ്റ് ചെയ്യാനായില്ല: {e}|ഫോൾഡറിൽ നിന്ന് ഇൻസ്റ്റാൾ ചെയ്തു: അതിനൊപ്പം അപ്‌ഡേറ്റ് ആകും|അപ്‌ഡേറ്റുകൾ പരിശോധിക്കുക|ഓരോ 6 മണിക്കൂറിലും പുതിയ പതിപ്പ് തിരയുക',
-  am: 'ስለ|ስሪት|አዲስ ስሪት ለመፈለግ ጠቅ ያድርጉ|በማረጋገጥ ላይ…|ይህ የቅርብ ጊዜው ስሪት ነው|ስሪት {v} ወጥቷል|ምን አዲስ ነገር አለ|አዘምን|በኋላ|ወደ {v} በማዘመን ላይ…|ወደ {v} ተዘምኗል|ዝማኔውን ለመጨረስ Claude Codeን እንደገና ያስጀምሩ|ማረጋገጥ አልተቻለም፦ {e}|ማዘመን አልተቻለም፦ {e}|ከአቃፊ የተጫነ፦ ከእሱ ጋር ይዘምናል|ዝማኔዎችን ፈልግ|በየ6 ሰዓቱ አዲስ ስሪት ፈልግ',
-  ha: 'Game da|Siga|Danna don neman sabuwar siga|Ana dubawa…|Wannan ita ce sabuwar siga|Siga {v} ta fito|Me ya sabunta|Sabunta|Daga baya|Ana sabuntawa zuwa {v}…|An sabunta zuwa {v}|Sake kunna Claude Code don gama sabuntawa|Ba a iya dubawa ba: {e}|Ba a iya sabuntawa ba: {e}|An saka daga babban fayil: yana sabuntawa tare da shi|Duba sabuntawa|Nemi sabuwar siga kowane awa 6',
-  sw: 'Kuhusu|Toleo|Bofya ili kutafuta toleo jipya|Inakagua…|Hili ndilo toleo jipya zaidi|Toleo {v} limetoka|Kipi kipya|Sasisha|Baadaye|Inasasisha hadi {v}…|Imesasishwa hadi {v}|Anzisha upya Claude Code ili kumaliza kusasisha|Imeshindwa kukagua: {e}|Imeshindwa kusasisha: {e}|Imesakinishwa kutoka folda: inasasishwa pamoja nayo|Angalia masasisho|Tafuta toleo jipya kila saa 6',
-}
 const wordsOf = (lang: string): Words => {
   const parts = (WORDS[lang] ?? WORDS.en ?? '').split('|')
-  const more = (VERSION_WORDS[lang] ?? VERSION_WORDS.en ?? '').split('|')
-  return Object.fromEntries([...WORD_KEYS.map((k, i) => [k, parts[i] ?? '']), ...VERSION_KEYS.map((k, i) => [k, more[i] ?? ''])]) as Words
+  return Object.fromEntries(WORD_KEYS.map((k, i) => [k, parts[i] ?? ''])) as Words
 }
 // a language tag (ru, pt-BR, zh-Hant-TW, es-MX) to one of WORDS, or '' for none of them
 function fromTag(tag: string) {
@@ -2421,8 +2401,8 @@ async function readWords($: EngineInterface, rows: readonly { key: string; value
   const local = fromTag(await readAppLocale($)) || fromTag((systemLocale ??= await readSystemLocale($))) || fromTag(intlLocale())
   return useLang(named === 'zh' ? (local === 'zh-TW' ? 'zh-TW' : 'zh-CN') : local || 'en')
 }
-// one row of the window: a switch, the seconds a finished bar stays, or the version (by key), whose line may end in a link
-type SettingRow = { key: string; title: string; about: string; isOn?: boolean; press?: () => Promise<void>; link?: { href: string; label: string } }
+// one row of the window: a switch or the seconds a finished bar stays
+type SettingRow = { key: string; title: string; about: string; isOn?: boolean; press?: () => Promise<void> }
 
 // the desktop's controls, drawn as Claude Desktop's own settings draw them and following its theme: a Button's label is
 // text only, so the picture sits under a Button that takes the presses (the fold chip's way). The desktop draws a
@@ -2465,48 +2445,22 @@ const segSvg = (w: number, i: number, count: number, isPicked: boolean, isLive: 
 // a hairline between the desktop's rows, stretched to the pane's width; its height is the room around it
 const RULE = `<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="13" viewBox="0 0 2000 13" preserveAspectRatio="none"><rect y="6" width="2000" height="1" fill="#808080" fill-opacity=".22"/></svg>`
 
-// the version row's line for where a check or an update stands; the newer release's line ends in its notes
-const versionLine = (s: VersionState, me: Install, w: Words): Pick<SettingRow, 'about' | 'link'> => {
-  const v = (text: string, version: string) => text.replace('{v}', version)
-  switch (s.phase) {
-    case 'checking':
-      return { about: w.checking }
-    case 'latest':
-      return { about: w.latest }
-    case 'available':
-      return { about: v(w.avail, s.version), ...(s.url ? { link: { href: s.url, label: w.notes } } : {}) }
-    case 'updating':
-      return { about: v(w.updating, s.version) }
-    case 'installed':
-      return { about: v(s.version === me.version ? w.updated : w.updating, s.version) }
-    case 'restart':
-      return { about: w.restart }
-    case 'failed':
-      return { about: (s.what === 'check' ? w.failc : w.failu).replace('{e}', s.detail) }
-    case 'folder':
-      return { about: w.folder }
-    default:
-      return { about: w.verd }
-  }
-}
-
 // one pane, opened by a press or a command, so it is placed at any width; the engine draws its close control and
-// Escape closes it. Inline on the terminal it asks room for three heads, seven rows and the lines between the sections
+// Escape closes it. Inline on the terminal it asks room for two heads, five rows and the line between the sections
 async function openSettings($: EngineInterface) {
   if (await readWords($, await Promise.resolve().then(() => $.config.list()).catch(() => []))) await holdChoices($)
-  return $.ui.open({ id: SETTINGS, title: 'Plan progress', focus: true, closeOnEscape: true, rows: 12 })
+  return $.ui.open({ id: SETTINGS, title: 'Plan progress', focus: true, closeOnEscape: true, rows: 8 })
 }
 
 // the choices are written to $.state with every change: the footer and the window draw them again, and a reload of the
 // mod (an option set in the window) takes them back from there, even when the store cannot keep them (fromStore)
 async function holdChoices($: EngineInterface) {
-  await update($, prefs, held => ({ autoclose: isAutoClose, sounds: isSoundOn, speedShown: isSpeedShown, updateCheck: isUpdateCheckOn, lang: langCode, rev: (held?.rev ?? 0) + 1 }))
+  await update($, prefs, held => ({ autoclose: isAutoClose, sounds: isSoundOn, speedShown: isSpeedShown, lang: langCode, rev: (held?.rev ?? 0) + 1 }))
 }
 
-async function setChoice($: EngineInterface, key: typeof AUTOCLOSE | typeof SOUNDS | typeof SPEED_SHOWN | typeof UPDATE_CHECK, isOn: boolean) {
+async function setChoice($: EngineInterface, key: typeof AUTOCLOSE | typeof SOUNDS | typeof SPEED_SHOWN, isOn: boolean) {
   if (key === AUTOCLOSE) isAutoClose = isOn
   else if (key === SOUNDS) isSoundOn = isOn
-  else if (key === UPDATE_CHECK) isUpdateCheckOn = isOn
   else isSpeedShown = isOn
   // drawn first, kept after: the store writes a file
   await holdChoices($)
@@ -2539,204 +2493,6 @@ async function setOption($: EngineInterface, field: 'twinkle' | 'doneBarSeconds'
   } finally {
     isSettingOption = false
   }
-}
-
-// the version row: the mod's own version, and on a press the newest published release of it. The marketplace repo holds
-// several mods, so a release is ours by its tag (plan-progress-v1.2.3); drafts and pre-releases are not offered.
-// PLAN_PROGRESS_RELEASES_URL points the check elsewhere (a local stand-in for GitHub while the update is developed)
-const RELEASES = 'https://api.github.com/repos/zycck/claude-mods/releases?per_page=100'
-const RELEASE_TAG = 'plan-progress-v'
-// where a check or an update stands, in $.state: the window draws it, and it outlives the reload an update ends with
-const versionState = atom({ plugin: 'plan-progress', key: 'version' } as const, { phase: 'idle' } as VersionState)
-// how this copy is installed: its version, and the marketplace it came from, or none for a folder (--plugin-dir, a dev
-// mod), which updates with its folder and not through `claude plugin update`
-type Install = { version: string; market: string | null }
-let install: Promise<Install> | null = null
-const samePath = (a: string, b: string) => {
-  const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '')
-  const [x, y] = [norm(a), norm(b)]
-  return /^[A-Za-z]:/.test(x) ? x.toLowerCase() === y.toLowerCase() : x === y
-}
-async function readInstall($: EngineInterface): Promise<Install> {
-  const manifest = await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`).catch(() => '{}')
-  const version = String((JSON.parse(manifest) as { version?: unknown }).version ?? '')
-  try {
-    const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || ''
-    const dir = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`
-    const list = JSON.parse(await $.fs.read(`${dir}/plugins/installed_plugins.json`)) as { plugins?: Record<string, { installPath?: string }[]> }
-    for (const [id, rows] of Object.entries(list.plugins ?? {}))
-      for (const row of rows)
-        if (id.startsWith('plan-progress@') && row.installPath && samePath(row.installPath, $.plugin.root))
-          return { version, market: id.slice('plan-progress@'.length) }
-  } catch {}
-  return { version, market: null }
-}
-// 1.10.0 after 1.9.2; a part that is no number counts as 0
-const isNewer = (a: string, b: string) => {
-  const pa = a.split('.').map(n => Number.parseInt(n, 10) || 0)
-  const pb = b.split('.').map(n => Number.parseInt(n, 10) || 0)
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0)
-  return false
-}
-// the newest of our releases in GitHub's list, or null for none
-const newestRelease = (list: unknown) => {
-  let best: { version: string; url: string } | null = null
-  for (const r of Array.isArray(list) ? (list as { tag_name?: unknown; draft?: unknown; prerelease?: unknown; html_url?: unknown }[]) : []) {
-    const tag = typeof r.tag_name === 'string' ? r.tag_name : ''
-    const version = tag.startsWith(RELEASE_TAG) ? tag.slice(RELEASE_TAG.length) : ''
-    if (!/^\d+(\.\d+)*$/.test(version) || r.draft === true || r.prerelease === true) continue
-    if (!best || isNewer(version, best.version)) best = { version, url: typeof r.html_url === 'string' ? r.html_url : '' }
-  }
-  return best
-}
-// what went wrong, short enough for the line under the title
-const shortReason = (text: string) => {
-  const line = text.trim().split('\n').filter(Boolean).at(-1) ?? ''
-  return (line.length > 80 ? `${line.slice(0, 79)}…` : line) || 'unknown error'
-}
-// a check or an update on its way; an installed version waits for the reload, which this copy outlives only when the
-// reload did not take (then restart says so)
-const isVersionBusy = (s: VersionState, me: Install) => s.phase === 'checking' || s.phase === 'updating' || (s.phase === 'installed' && s.version !== me.version)
-
-async function setVersion($: EngineInterface, next: VersionState) {
-  await update($, versionState, () => next)
-}
-// the keyboard's ring follows the row as its buttons change (the ↻ becomes Update and Later, and back), or it is left
-// on nothing and the next Tab starts over; refused, and nothing done, where the window does not hold the keys
-async function ringOn($: EngineInterface, key: string) {
-  await Promise.resolve()
-    .then(() => $.ui.focus({ requestId: SETTINGS, key }))
-    .catch(() => {})
-}
-
-// a press on the version: looks for a newer release. A folder install is not checked, it updates with its folder
-// the newest release of this mod, or null for none; what was found is kept in the store with the time, so every
-// session (and the next one) knows it without asking GitHub again
-async function fetchNewest($: EngineInterface) {
-  const url = (await $.env.get('PLAN_PROGRESS_RELEASES_URL')) || RELEASES
-  const r = await $.http.fetch(url, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'plan-progress' } })
-  if (!r.ok) throw new Error(`HTTP ${r.status}`)
-  const newest = newestRelease(JSON.parse(r.text))
-  await Promise.resolve()
-    .then(async () => {
-      await $.store.set(CHECKED_AT, await $.clock.now())
-      await $.store.set(FOUND, newest)
-    })
-    .catch(() => {})
-  return newest
-}
-
-async function checkVersion($: EngineInterface) {
-  const me = await (install ??= readInstall($))
-  if (isVersionBusy(await read($, versionState), me)) return
-  if (!me.market) return void (await setVersion($, { phase: 'folder' }))
-  await setVersion($, { phase: 'checking' })
-  let next: VersionState
-  try {
-    const newest = await fetchNewest($)
-    next = newest && isNewer(newest.version, me.version) ? { phase: 'available', ...newest } : { phase: 'latest' }
-  } catch (err) {
-    next = { phase: 'failed', what: 'check', detail: shortReason(err instanceof Error ? err.message : String(err)) }
-  }
-  await setVersion($, next)
-  if (next.phase === 'available') await ringOn($, 'version-update')
-}
-
-// the check on its own: when the session starts and every half hour after, it asks GitHub when the last answer (any
-// session's) is six hours old, and offers what it found, a blue mark by the footer's ⚙ saying so. Quiet: a failure
-// shows nothing, and the window's states on their way or waiting for a restart are left alone (an offer replaces an
-// answer or a failure). Off with the window's switch, for a folder install, and where non-essential traffic is off
-const CHECKED_AT = 'updateCheckedAt'
-const FOUND = 'updateFound'
-const DISMISSED = 'updateDismissed'
-const CHECK_EVERY_MS = 6 * 60 * 60 * 1000
-async function autoCheck($: EngineInterface) {
-  if (!isUpdateCheckOn || (await $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'))) return
-  const me = await (install ??= readInstall($))
-  if (!me.market) return
-  const checkedAt = await fromStore($, CHECKED_AT)
-  let found = (await fromStore($, FOUND)) as { version: string; url: string } | null | undefined
-  if (typeof checkedAt !== 'number' || (await $.clock.now()) - checkedAt >= CHECK_EVERY_MS) found = await fetchNewest($).catch(() => found)
-  if (!found || !isNewer(found.version, me.version) || (await fromStore($, DISMISSED)) === found.version) return
-  const offer = found
-  await update($, versionState, (s): VersionState => (s.phase === 'idle' || s.phase === 'latest' || s.phase === 'failed' ? { phase: 'available', ...offer } : s))
-}
-
-// the CLI's --json answer: its last line that parses
-const lastJson = (text: string) => {
-  for (const line of text.trim().split('\n').reverse())
-    try {
-      return JSON.parse(line) as { outcome?: string; updateOutcome?: string; newVersion?: string; message?: string }
-    } catch {}
-  return null
-}
-// the claude to run: the session's own binary where the host names it (the desktop's is off PATH), else the one on
-// PATH, which may be another version: the commands below are ones 2.1.286 already knows
-async function claudeCli($: EngineInterface) {
-  const own = (await $.env.get('CLAUDE_CODE_EXECPATH')) ?? ''
-  return /(^|[\\/])claude(\.exe)?$/i.test(own) ? own : 'claude'
-}
-// Update: the marketplace is pulled first (without it `claude plugin update` finds nothing new), then the plugin, in
-// the scope the CLI finds it in; the running session then reloads its plugins, which loads the new version in place.
-// The CLI says to restart, but a /reload-plugins run from here was seen to load it (on a local stand-in marketplace,
-// in the terminal)
-async function updateVersion($: EngineInterface) {
-  const s = await read($, versionState)
-  if (s.phase !== 'available') return
-  const me = await (install ??= readInstall($))
-  if (!me.market) return
-  await setVersion($, { phase: 'updating', version: s.version })
-  await ringOn($, 'version')
-  try {
-    const cli = await claudeCli($)
-    // `marketplace update` has no --json before 2.1.295: its exit code says
-    const pulled = await $.process.run([cli, 'plugin', 'marketplace', 'update', me.market], { timeoutMs: 180_000 })
-    if (pulled.exitCode !== 0) throw new Error(pulled.stderr || pulled.stdout)
-    const ran = await $.process.run([cli, 'plugin', 'update', `plan-progress@${me.market}`, '--json'], { timeoutMs: 180_000 })
-    const res = lastJson(ran.stdout)
-    if (ran.exitCode !== 0 || res?.outcome !== 'ok') throw new Error(res?.message ?? (ran.stderr || ran.stdout))
-    // nothing installed: the marketplace does not have the release yet. Already there counts when it is newer than this
-    // copy: an update whose reload did not take, pressed again
-    if (res.updateOutcome !== 'updated' && !(res.newVersion && isNewer(res.newVersion, me.version))) throw new Error(res.message ?? 'nothing to update')
-    const version = res.newVersion ?? s.version
-    await setVersion($, { phase: 'installed', version })
-    // a command waits for the session to be idle, the press's own turn included: started after it
-    $.clock.after(300, () => void reloadPlugins($, version))
-  } catch (err) {
-    await setVersion($, { phase: 'failed', what: 'update', detail: shortReason(err instanceof Error ? err.message : String(err)) })
-  }
-}
-// the reload unloads this module and loads the new one, whose timers start over: this one's timer firing means the
-// old code is still running, so the update waits for a restart
-async function reloadPlugins($: EngineInterface, version: string) {
-  const isRun = await $.command.run({ command: 'reload-plugins', args: '' }).then(
-    () => true,
-    () => false,
-  )
-  if (!isRun) return void (await setVersion($, { phase: 'restart', version }))
-  $.clock.after(5000, () => void update($, versionState, (s): VersionState => (s.phase === 'installed' && s.version === version ? { phase: 'restart', version } : s)))
-}
-// the mod loaded again: a check or an update on its way went with the old code (its waits are cancelled), so the row
-// starts over; an installed update is done when this copy is it, and waits for a restart when the reload brought the
-// old one back
-async function settleVersion($: EngineInterface) {
-  const me = await (install ??= readInstall($))
-  await update($, versionState, (s): VersionState => {
-    if (s.phase === 'checking' || s.phase === 'updating') return { phase: 'idle' }
-    if (s.phase === 'installed' && s.version !== me.version) return { phase: 'restart', version: s.version }
-    if (s.phase === 'restart' && s.version === me.version) return { phase: 'installed', version: s.version }
-    return s
-  })
-}
-// Later: the dot goes, and the timer does not bring this version back; a newer one, or a press on the version, does
-async function dismissVersion($: EngineInterface) {
-  const s = await read($, versionState)
-  if (s.phase === 'available')
-    await Promise.resolve()
-      .then(() => $.store.set(DISMISSED, s.version))
-      .catch(() => {})
-  await setVersion($, { phase: 'idle' })
-  await ringOn($, 'version')
 }
 
 // leftAt: the clock's time when it let the bar go. The bar is looked at again as it is taken away, since an agent that
@@ -2894,6 +2650,8 @@ export const register: Register = (on, options) => {
   const seconds = Number(options?.doneBarSeconds ?? 30)
   doneStaysMs = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 30_000
   isTwinkling = options?.twinkle !== false
+  // an open bar at the end of a turn that did work is sent back once; off, Stop never does
+  const isNudgingBars = options?.nudgeOpenBars !== false
 
   // per-turn bookkeeping; module variables are fine here, a reload just starts a fresh count
   let workCalls = 0
@@ -2902,6 +2660,8 @@ export const register: Register = (on, options) => {
   let hasRefused = false
   let isWaitingOnBackground = false
   let hasWarnedNoTool = false
+  // the main loop's current turn, as its turn.start said
+  let turnId = ''
 
   on('prompt.attachment', async ($, e, next) => {
     if (!e.agentId && (e.type === 'plan_mode' || e.type === 'plan_mode_reentry' || e.type === 'plan_mode_exit') && e.detail?.planFilePath)
@@ -2911,6 +2671,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
+    if (!e.agentId) turnId = e.turnId
     isTurnLive = true
     workCalls = 0
     sinceUpdate = 0
@@ -2958,28 +2719,29 @@ export const register: Register = (on, options) => {
     return next({ ...e, context: [...(e.context ?? []), line] })
   })
 
-  // watches the main loop's changing calls: refuses once when multi-step work starts without a bar,
-  // and reminds to update the bar when it goes stale mid-turn
-  on('tool.call', async ($, e, next) => {
-    // a subagent's call only names its current tool on its strip; no gate, no reminders
+  // A matcher-less tool.call (or tool.run) hook would turn off the move to the background, the live output and Code
+  // Mode's wait for every tool, so none is registered: the calls are watched where that is not paid.
+  // tool.check, before the call: a subagent's call names its current tool on its strip (no gate, no reminders there);
+  // the main loop's shell call says whether it goes to the background, and its edit is refused once when
+  // multi-step work starts without a bar
+  on('tool.check', async ($, e, next) => {
+    const verdict = await next(e)
+    // a query ($.tool.check) is no call: nothing runs, nothing is shown
+    if (!e.tool_use_id || verdict.decision === 'deny') return verdict
+    const input = (e.input ?? {}) as Raw
     if (e.agentId) {
       const agentId = e.agentId
-      if (!(await knowAgent($, agentId, true))) return next(e)
-      const useId = e.tool_use_id ?? `${agentId}#${++flightCount}`
-      flights.set(useId, { agentId, tool: e.tool, isAsked: false })
-      await showAgent($, agentId)
-      try {
-        return await next(e)
-      } finally {
-        flights.delete(useId)
-        await showAgent($, agentId, e.tool)
+      if (await knowAgent($, agentId, true)) {
+        flights.set(e.tool_use_id, { agentId, tool: e.tool, isAsked: false })
+        await showAgent($, agentId)
       }
+      return verdict
     }
     if (SHELL_TOOLS.has(e.tool)) {
-      isWaitingOnBackground = (e as unknown as Raw).run_in_background === true
-      return next(e)
+      isWaitingOnBackground = input.run_in_background === true
+      return verdict
     }
-    if (!EDIT_TOOLS.has(e.tool) || isPlanFile((e as unknown as Raw).file_path)) return next(e)
+    if (!EDIT_TOOLS.has(e.tool) || isPlanFile(input.file_path)) return verdict
     isWaitingOnBackground = false
     // a bar a subagent made is its own to move: it neither stands in for the main loop's bar nor is reminded of
     const open = (await read($, plans)).filter(p => isOpenPlan(p) && !p.byAgent)
@@ -2987,21 +2749,44 @@ export const register: Register = (on, options) => {
     if (!hasLivePlan && !hasRefused && workCalls >= WORK_BEFORE_PLAN && !(await isToolMissing($))) {
       hasRefused = true
 
-      return { deny: `plan-progress: several changes ahead. Create a bar with ${TOOL} first, then retry.` }
+      return { decision: 'deny', reason: `plan-progress: several changes ahead. Create a bar with ${TOOL} first, then retry.` }
     }
-    const ran = await next(e)
-    if (ran.deny !== undefined) return ran
+
+    return verdict
+  })
+
+  // after a call that ran: a subagent's strip names the tool it last ran, and the main loop's edit is counted and, when
+  // its bar has not moved for a while, reminded of (a call a person refused is no work done, so it is not counted)
+  on('classic.PostToolUse', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agent_id) {
+      flights.delete(e.tool_use_id)
+      if (await knowAgent($, e.agent_id)) await showAgent($, e.agent_id, e.tool_name)
+
+      return result
+    }
+    if (!EDIT_TOOLS.has(e.tool_name) || isPlanFile((e.tool_input as Raw | null | undefined)?.file_path)) return result
     workCalls += 1
     sinceUpdate += 1
+    const open = (await read($, plans)).filter(p => isOpenPlan(p) && !p.byAgent)
     // a finished bar keeps the gate shut but has nothing left to update, so only an open one is reminded of
     if (open.length > 0 && sinceUpdate >= CALLS_BEFORE_NUDGE && !(await isToolMissing($))) {
       sinceUpdate = 0
       const ids = open.map(p => p.id).join(', ')
 
-      return { ...ran, context: [...(ran.context ?? []), `plan-progress: ${ids} not updated for a while; send {id, next:true} or {id, done, active}.`] }
+      return { ...result, additionalContext: [...(result.additionalContext ?? []), `plan-progress: ${ids} not updated for a while; send {id, next:true} or {id, done, active}.`] }
     }
 
-    return ran
+    return result
+  })
+  on('classic.PostToolUseFailure', async ($, e, next) => {
+    // a failed call is no work done: only a subagent's strip is brought up to date
+    if (e.agent_id) {
+      flights.delete(e.tool_use_id)
+      if (await knowAgent($, e.agent_id)) await showAgent($, e.agent_id, e.tool_name)
+    }
+
+    return next(e)
   })
 
   // an open bar at the end of a turn: a question to the user marks it waiting on its own;
@@ -3027,7 +2812,11 @@ export const register: Register = (on, options) => {
     }
     // a session waiting on its background work wakes again by itself (or never, a dev server): nothing to send back
     if (isWaitingOnBackground || (e.background_tasks?.length ?? 0) > 0) return result
-    if ((workCalls === 0 && !isPlanTouched) || (await isToolMissing($))) return result
+    if (!isNudgingBars || (workCalls === 0 && !isPlanTouched) || (await isToolMissing($))) return result
+    // once per turn: a turn already sent back for its bars is let go, whatever it left open
+    const turn = turnId || e.prompt_id || ''
+    if (turn !== '' && (await read($, nudgedTurn)) === turn) return result
+    if (turn !== '') await update($, nudgedTurn, () => turn)
 
     return {
       ...result,
@@ -3053,7 +2842,6 @@ export const register: Register = (on, options) => {
     isAutoClose = held ? held.autoclose : (await fromStore($, AUTOCLOSE)) === true
     isSoundOn = held ? held.sounds : (await fromStore($, SOUNDS)) !== false
     isSpeedShown = held ? held.speedShown : (await fromStore($, SPEED_SHOWN)) !== false
-    isUpdateCheckOn = held?.updateCheck ?? (await fromStore($, UPDATE_CHECK)) !== false
     // the language too, as the session last read it; read again below
     if (held?.lang) useLang(held.lang)
     await holdChoices($)
@@ -3101,16 +2889,15 @@ export const register: Register = (on, options) => {
     const session = await $.session.id()
     if (kept.length === 0) await restorePlans($, session)
     else shownSession = session
+    await readModelFamilies($)
     const rows = await $.config.list().catch(() => [])
     const theme = rows.find(row => row.key === 'theme')
     themeSetting = String(theme?.value ?? 'dark')
     if (await readWords($, rows)) await holdChoices($)
     isLight = tintIsLight()
-    await settleVersion($)
-    // the update check waits a little after the start, out of the session's way
-    $.clock.after(15_000, () => void autoCheck($))
-    $.clock.every(30 * 60 * 1000, () => void autoCheck($))
-    $.clock.every(1000, async () => {
+    // a session.start that comes again in this module (a resume, a reload of the plugin list) replaces the clock, not adds one
+    sessionClock?.cancel()
+    sessionClock = $.clock.every(1000, async () => {
       // the session changed under the mod (a /clear, a /resume): its bars are loaded here, as no session.start comes
       const id = await $.session.id()
       if (id !== shownSession && id !== endedSession) await restorePlans($, id)
@@ -3306,7 +3093,6 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const s = await read($, speed)
     await read($, prefs)
-    const hasNews = (await read($, versionState)).phase === 'available'
     const { Box, Button, Text } = $.ui.resolve(e)
     // other mods add their labels to modes beneath us; keep them
     const below = await next(e)
@@ -3315,14 +3101,7 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="row" alignItems="center" gap={1}>
         {isSpeedShown ? <Text dimColor={!s.isLive}>{speedLabel(s)}</Text> : null}
-        {hasGear && hasNews && e.surface !== 'desktop' ? (
-          <Button key="settings" plain label="⚙" onPress={() => openSettings($)}>
-            <Text dimColor>⚙</Text>
-            <Text color="suggestion">●</Text>
-          </Button>
-        ) : hasGear ? (
-          <Button key="settings" plain dimColor label={e.surface !== 'desktop' ? '⚙' : hasNews ? GEAR_NEWS : GEAR_TEXT} onPress={() => openSettings($)} />
-        ) : null}
+        {hasGear ? <Button key="settings" plain dimColor label={e.surface !== 'desktop' ? '⚙' : GEAR_TEXT} onPress={() => openSettings($)} /> : null}
         {below}
       </Box>
     )
@@ -3335,10 +3114,8 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
     const s = await read($, speed)
     await read($, prefs)
-    const ver = await read($, versionState)
-    const me = await (install ??= readInstall($))
     const t = $.ui.resolve(e)
-    const { Box, Button, Link, Text } = t
+    const { Box, Button, Text } = t
     // the terminal's table carries an Svg too and draws it as nothing: the surface decides, not the table
     const Svg = e.surface !== 'terminal' && 'Svg' in t ? t.Svg : null
     const w = words
@@ -3355,8 +3132,6 @@ export const register: Register = (on, options) => {
       { key: AUTOCLOSE, title: w.ac, about: w.acd, isOn: isAutoClose, press: () => setChoice($, AUTOCLOSE, !isAutoClose) },
       { key: 'stays', title: w.st, about: w.std },
       { key: 'sounds', title: w.sn, about: w.snd, isOn: isSoundOn, press: () => setChoice($, SOUNDS, !isSoundOn) },
-      { key: UPDATE_CHECK, title: w.uc, about: w.ucd, isOn: isUpdateCheckOn, press: () => setChoice($, UPDATE_CHECK, !isUpdateCheckOn) },
-      { key: 'version', title: w.ver, ...versionLine(ver, me, w) },
     ]
     // the cell a seconds label needs on the desktop, the same for all so the track is even: the widest of their Buttons
     const segW = Math.max(44, ...stays.map(n => buttonW(cellLabel(n))))
@@ -3366,12 +3141,9 @@ export const register: Register = (on, options) => {
     // a terminal pane too narrow for a title, its line and the widest control on one row (the dock beside a 110-column
     // transcript is 39) gives the line a row of its own under the title, so neither the title nor a control is cut.
     // A switch is [ ━━● On ], a seconds cell [ 30 s ]
-    const versionLabel = `↻ ${me.version || '?'}`
     const controlCells = Math.max(
       wordCells + 8,
       stays.reduce((n, x) => n + columnsOf(secsLabel(x)) + 4, 0),
-      columnsOf(versionLabel) + 4,
-      columnsOf(w.upd) + columnsOf(w.later) + 8,
     )
     const isNarrow = e.props.bodyColumns < titleCells + 1 + 16 + 1 + controlCells
     // the seconds: on the desktop one track cut into cells, the picked one raised; on the terminal [ 10 s ][ 30 s ]..., the
@@ -3397,19 +3169,7 @@ export const register: Register = (on, options) => {
         })}
       </Box>
     )
-    // the version: a button that checks, or, with a newer release out, Update and Later. Each surface draws its own
-    // buttons, the desktop its native ones
-    const versionControl =
-      ver.phase === 'available' ? (
-        <Box key="version" flexDirection="row" flexShrink={0} gap={1}>
-          <Button key="version-update" variant="primary" label={w.upd} onPress={() => updateVersion($)} />
-          <Button key="version-later" label={w.later} onPress={() => dismissVersion($)} />
-        </Box>
-      ) : (
-        <Button key="version" dimColor={isVersionBusy(ver, me)} label={versionLabel} onPress={() => checkVersion($)} />
-      )
     const control = (r: SettingRow) => {
-      if (r.key === 'version') return versionControl
       if (r.isOn === undefined) return segmented
       const press = () => r.press?.()
       // the picture says what the switch is and where it stands; the Button over it is blank
@@ -3433,21 +3193,12 @@ export const register: Register = (on, options) => {
         </Button>
       )
     }
-    // a row's line, dim, and the link it may end in: on the desktop after the words, on the terminal on a line of its
-    // own, where a terminal without links draws the address after the label and would push the words out of the row
-    const about = (r: SettingRow, wrap: 'wrap' | 'truncate') =>
-      r.link ? (
-        <Box flexDirection={Svg ? 'row' : 'column'} columnGap={1} flexShrink={1}>
-          <Text dimColor wrap={wrap}>
-            {r.about}
-          </Text>
-          <Link href={r.link.href} label={r.link.label} />
-        </Box>
-      ) : (
-        <Text dimColor wrap={wrap}>
-          {r.about}
-        </Text>
-      )
+    // a row's line, dim
+    const about = (r: SettingRow, wrap: 'wrap' | 'truncate') => (
+      <Text dimColor wrap={wrap}>
+        {r.about}
+      </Text>
+    )
     // the desktop: a title over its line, the control at the right, a hairline between rows; the terminal: one line each,
     // or on a narrow pane the title with the control and the line under them
     const line = (r: SettingRow) =>
@@ -3482,8 +3233,7 @@ export const register: Register = (on, options) => {
       )
     const sections = [
       { head: w.g1, rows: rows.slice(0, 2) },
-      { head: w.g2, rows: rows.slice(2, 5) },
-      { head: w.g3, rows: rows.slice(5) },
+      { head: w.g2, rows: rows.slice(2) },
     ]
     return (
       <Box flexDirection="column">

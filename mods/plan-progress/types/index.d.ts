@@ -39,19 +39,7 @@ export type Plan = {
 export type Speed = { rate: number | null; isLive: boolean }
 
 // the settings window's choices kept in the store: auto-close, the sounds, the footer's figure; rev counts the changes
-export type Prefs = { autoclose: boolean; sounds: boolean; speedShown: boolean; updateCheck?: boolean; lang?: string; rev: number }
-// where the settings window's version check or update stands; kept across the reload an update ends with
-export type VersionState =
-  | { phase: 'idle' }
-  | { phase: 'checking' }
-  | { phase: 'latest' }
-  | { phase: 'available'; version: string; url: string }
-  | { phase: 'updating'; version: string }
-  | { phase: 'installed'; version: string }
-  | { phase: 'restart'; version: string }
-  | { phase: 'failed'; what: 'check' | 'update'; detail: string }
-  | { phase: 'folder' }
-
+export type Prefs = { autoclose: boolean; sounds: boolean; speedShown: boolean; lang?: string; rev: number }
 declare module 'claude-code' {
   interface PluginState {
     'plan-progress': {
@@ -62,7 +50,8 @@ declare module 'claude-code' {
       speed: Speed
       // the settings window's choices as this session holds them, counted so each change redraws the footer and the window
       prefs: Prefs | null
-      version: VersionState
+      // the turn whose open bars Stop already sent back once
+      nudgedTurn: string
     }
   }
 }

@@ -6,6 +6,11 @@ All notable changes to the mods in this repository are recorded here. This file 
 
 Fixes from a review of every Claude mod in this repo. Copies of third-party mods are now marked patched in README.md.
 
+### plan-progress 1.1.0 (patched copy)
+
+- Changed: tool calls are watched through `tool.check` and classic PostToolUse instead of a catch-all `tool.call` hook. The stop nudge fires at most once per turn, and the new `nudgeOpenBars` option turns it off. Bedrock ARNs show as model names. The session clock no longer stacks.
+- Removed: the GitHub update check and the Update button.
+
 ### skins 0.6.0 (patched copy)
 
 - Changed: per-call bookkeeping moved from a catch-all `tool.call` hook to classic PostToolUse, so skins no longer turns off backgrounding. Run time now excludes permission waits. The frame ticker runs only while a turn works, and per-call state is capped at 500 calls.

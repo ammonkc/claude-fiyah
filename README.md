@@ -77,7 +77,7 @@ Copies run the same code as upstream, so the protection comes from the audit and
 
 | Mod | Version | Upstream | License |
 |---|---|---|---|
-| plan-progress | 1.0.0 | zycck/claude-mods | none in repo; plugin.json says MIT |
+| plan-progress | 1.1.0 (patched) | zycck/claude-mods | none in repo; plugin.json says MIT |
 | image-view | 0.2.0 | jarrodwatts/claude-image-view | MIT (LICENSE) |
 | next-steps | 1.0.0 | anthropics/claude-plugins-community | none in repo; plugin.json says MIT |
 | notify | 0.1.3 | mishgoldenberg/claude-mods | none |
@@ -93,7 +93,7 @@ The repository is private, so the copies without a license file are kept here as
 
 Audited 2026-10-28. Findings that matter when you review an update:
 
-- **plan-progress**: fetches GitHub's releases list for an update check (session start, then every 30 minutes). An Update button runs `claude plugin marketplace update` and `claude plugin update` against the marketplace the plugin was installed from.
+- **plan-progress**: the upstream GitHub update check and its Update button (which ran `claude plugin update`) are removed in this copy, so it makes no network calls.
 - **skins**: the upstream update check (a daily fetch of `plugin.json` from `main`) and the star toast are removed in this copy, so it makes no network calls. `hooks/vendor/mermaid-ascii.js` was rebuilt from `scripts/vendor` and matches the shipped bundle byte for byte.
 - **filetree**: runs `git`, `find`, `du`, `tmux` and similar through argv arrays. The "Open with" and "Diff with" settings are run as commands, by design, from the user's own config.
 - **reflect-mod**: sends short prompts to a model for review, and writes `CLAUDE.md` when you press save.

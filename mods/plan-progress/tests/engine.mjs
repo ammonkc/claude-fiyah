@@ -204,6 +204,7 @@ export async function boot(file, kept = new Map()) {
   }
 
   let use = 0
+  let turns = 0
   const uid = () => 'u' + ++use
   const coreRuns = []
   const api = {
@@ -240,6 +241,8 @@ export async function boot(file, kept = new Map()) {
       for (const t of [...every]) if (t.isOn) await t.cb()
     },
     frameTimers: () => every.filter(t => t.isOn && t.ms < 100).length,
+    // the live repeating timers of one period
+    clocks: ms => every.filter(t => t.isOn && t.ms === ms).length,
     // one period of the frame clock alone (timers under 100 ms), as the 33 ms clock fires many times a second;
     // a frame runs on by itself after its timer returns, so the period ends once it has
     frameTick: async () => {
@@ -253,11 +256,16 @@ export async function boot(file, kept = new Map()) {
       for (const t of due) if (t.isOn) await t.cb()
     },
     call: input => dispatch('tool.call', { tool: TOOL, tool_use_id: uid(), ...input }, () => ({ result: 'core reached' })),
-    work: (tool = 'Edit', isReadOnly = false) =>
-      dispatch('tool.call', { tool, command: 'x', tool_use_id: uid() }, () => {
-        coreRuns.push(tool)
-        return isReadOnly ? { result: {}, text: '', isReadOnly: true } : { result: {}, text: '' }
-      }),
+    // a call of the main loop as the engine runs it: tool.check decides, the tool runs, PostToolUse follows (its
+    // additionalContext is what the model reads beside the result, as context here). input is the tool's arguments
+    work: async (tool = 'Edit', isReadOnly = false, input = { command: 'x' }) => {
+      const id = uid()
+      const verdict = await dispatch('tool.check', { tool, input, tool_use_id: id }, () => ({ decision: 'allow' }))
+      if (verdict.decision === 'deny') return { deny: verdict.reason }
+      coreRuns.push(tool)
+      const post = await dispatch('classic.PostToolUse', { hook_event_name: 'PostToolUse', tool_name: tool, tool_input: input, tool_response: {}, tool_use_id: id }, () => ({}))
+      return { result: {}, text: '', ...(isReadOnly ? { isReadOnly: true } : {}), ...(post.additionalContext ? { context: post.additionalContext } : {}) }
+    },
     exitPlan: result => dispatch('tool.call', { tool: 'ExitPlanMode', tool_use_id: uid() }, () => result),
     spawn: (agentId, description, parentAgentId) =>
       dispatch('agent.spawn', { description, subagentType: 'general-purpose', parentAgentId }, () => {
@@ -286,13 +294,19 @@ export async function boot(file, kept = new Map()) {
       for await (const c of g) out.push(c)
       return out
     },
-    agentTool: (agentId, tool) => (working(agentId), dispatch('tool.call', { tool, agentId, tool_use_id: uid() }, () => ({ result: {} }))),
+    agentTool: async (agentId, tool) => {
+      working(agentId)
+      const id = uid()
+      await dispatch('tool.check', { tool, input: {}, agentId, tool_use_id: id }, () => ({ decision: 'allow' }))
+      await dispatch('classic.PostToolUse', { hook_event_name: 'PostToolUse', agent_id: agentId, tool_name: tool, tool_input: {}, tool_response: {}, tool_use_id: id }, () => ({}))
+      return { result: {} }
+    },
     turnComplete: (agentId, reason = 'answer') => {
       const row = agentId && agentRows.get(agentId)
       if (row) row.status = reason === 'answer' ? 'completed' : reason === 'aborted' ? 'killed' : 'failed'
       return dispatch('turn.complete', { agentId, reason }, () => ({}))
     },
-    turnStart: () => dispatch('turn.start', {}, () => ({})),
+    turnStart: () => dispatch('turn.start', { text: '', turnId: `turn${++turns}` }, ev => ({ turnId: ev.turnId })),
     // a question from the main loop, or from a subagent's loop when agentId is given; answer plays the person
     // answering, run while the dialog is still open
     ask: (agentId, answer = () => ({ result: {} })) => dispatch('tool.call', { tool: 'AskUserQuestion', agentId, tool_use_id: uid() }, answer),
@@ -306,13 +320,14 @@ export async function boot(file, kept = new Map()) {
       const held = new Promise(r => (release = r))
       let checked
       const asked = new Promise(r => (checked = r))
-      const call = dispatch('tool.call', { tool: 'Bash', agentId, tool_use_id: id }, async () => {
-        await dispatch('tool.check', { tool: 'Bash', tool_use_id: id }, () => ({ decision: 'ask' }))
+      const call = (async () => {
+        await dispatch('tool.check', { tool: 'Bash', input: {}, agentId, tool_use_id: id }, () => ({ decision: 'ask' }))
         if (dialog) await dispatch('classic.PermissionRequest', { hook_event_name: 'PermissionRequest', agent_id: agentId, tool_name: 'Bash', tool_input: {} }, () => ({}))
         checked()
         await held
+        await dispatch('classic.PostToolUse', { hook_event_name: 'PostToolUse', agent_id: agentId, tool_name: 'Bash', tool_input: {}, tool_response: {}, tool_use_id: id }, () => ({}))
         return { result: {} }
-      })
+      })()
       await asked
       return { release: async () => (release(), call) }
     },
@@ -328,7 +343,7 @@ export async function boot(file, kept = new Map()) {
       state.clear()
     },
     switchSession: id => void (sessionId = id),
-    stop: (msg = 'Done.') => dispatch('classic.Stop', { stop_hook_active: false, last_assistant_message: msg, background_tasks: [] }, () => ({})),
+    stop: (msg = 'Done.', extra = {}) => dispatch('classic.Stop', { stop_hook_active: false, last_assistant_message: msg, background_tasks: [], ...extra }, () => ({})),
     plans: () => $.__get({ ref: { key: 'plans' }, initial: [] }),
     bar: id => api.plans().find(p => p.id === id),
     steps: id => (api.bar(id)?.stages ?? []).flatMap(s => s.steps.map(st => `${st.title}:${st.status}`)).join(' '),
