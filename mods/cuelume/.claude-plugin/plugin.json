@@ -1,0 +1,46 @@
+{
+  "name": "cuelume",
+  "version": "0.2.0",
+  "description": "Two cuelume sounds for Claude Code: ready when a long turn ends, attention when a permission prompt waits.",
+  "author": {
+    "name": "Daniel Belyi",
+    "url": "https://github.com/danielwh2"
+  },
+  "homepage": "https://github.com/danielwh2/cuelume/tree/main/claude-code",
+  "repository": "https://github.com/danielwh2/cuelume",
+  "license": "MIT",
+  "keywords": [
+    "sound",
+    "audio",
+    "notifications",
+    "mod"
+  ],
+  "userConfig": {
+    "readyEnabled": {
+      "type": "boolean",
+      "title": "Turn-end cue",
+      "description": "Play the ready cue when a long turn ends with an answer.",
+      "default": true
+    },
+    "attentionEnabled": {
+      "type": "boolean",
+      "title": "Permission cue",
+      "description": "Play the attention cue when a permission prompt is waiting.",
+      "default": true
+    },
+    "minSeconds": {
+      "type": "number",
+      "title": "Ring after (seconds)",
+      "description": "Only play the ready cue for turns that ran at least this long.",
+      "default": 10,
+      "min": 0
+    },
+    "gain": {
+      "type": "number",
+      "title": "Volume (gain)",
+      "description": "Playback gain applied to the bundled sounds (0.1 to 3).",
+      "default": 1.4,
+      "min": 0.1
+    }
+  }
+}

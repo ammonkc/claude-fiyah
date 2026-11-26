@@ -2,6 +2,18 @@
 
 All notable changes to the mods in this repository are recorded here. This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries are added when a mod's version is bumped. Other mods will get entries the next time they are bumped.
 
+## cuelume 0.2.0 (2026-11-25)
+
+Copied from danielwh2/cuelume (`claude-code/`, plugin 0.1.5, commit 4a1c9f8) after a read only audit. Sound files are byte for byte upstream.
+
+### Added
+
+- Settings: `readyEnabled` and `attentionEnabled` switch each cue off on its own (so one can be silenced when notify or plan-progress already covers it), `minSeconds` sets how long a turn must run before `ready` rings, and `gain` sets the volume. Defaults match upstream (both on, 10 seconds, 1.4). Out of range or non-numeric values fall back to the default.
+
+### Fixed
+
+- A hook no longer waits on a sound that never finishes. The cue is awaited for at most 5 seconds after the hook's own work is done, so a stuck audio call cannot delay a permission answer or the end of a turn.
+
 ## prompt-cache-control 0.3.0 (2026-11-20)
 
 ### Added
