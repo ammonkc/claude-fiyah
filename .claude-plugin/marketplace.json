@@ -75,6 +75,10 @@
     {
       "name": "input-router",
       "source": "./mods/input-router"
+    },
+    {
+      "name": "cuelume",
+      "source": "./mods/cuelume"
     }
   ]
 }

@@ -97,6 +97,7 @@ Copies run the same code as upstream, so the protection comes from the audit and
 | filetree | 0.5.3 (patched) | data-goblin/claude-code-filetree | MIT (LICENSE) |
 | flightdeck | 0.5.2 (patched) | scasella/claude-flightdeck | MIT (LICENSE) |
 | skins | 0.6.0 (patched) | hellosverre/claude-skins | MIT (LICENSE) |
+| cuelume | 0.2.0 (patched) | danielwh2/cuelume (`claude-code/`, commit 4a1c9f8) | MIT (LICENSE) |
 
 The repository is private, so the copies without a license file are kept here as they are. None of them has been relicensed.
 
@@ -108,6 +109,7 @@ Audited 2026-10-28. Findings that matter when you review an update:
 - **reflect-mod**: sends short prompts to a model for review, and writes `CLAUDE.md` when you press save.
 - **prompt-cache-control**: reads `settings.json` files (read only) for the cache lifetime setting. When `keepWarm` is on, or you press its button, it makes a small model call (a fork of the conversation asked for one word) that bills a cache read.
 - **notify**: runs `osascript`, `powershell` or `notify-send` with arguments that have quotes and shell characters stripped.
+- **cuelume**: no network, process or filesystem access. It plays bundled WAV files and stores a theme name. All eight WAVs were checked for valid headers and no trailing data, and match upstream byte for byte. Patched to add per cue switches, `minSeconds` and `gain` settings, and a 5 second cap on how long a hook waits for a sound.
 - **flightdeck**: no network, process or filesystem access.
 - **prompt-coach**: the reviewer model default is the alias `haiku` instead of the first-party id `claude-haiku-4-5-20251001`, which Bedrock rejects.
 
@@ -127,6 +129,7 @@ claude plugin install prompt-cache-control@claude-fiyah
 claude plugin install filetree@claude-fiyah
 claude plugin install flightdeck@claude-fiyah
 claude plugin install skins@claude-fiyah
+claude plugin install cuelume@claude-fiyah
 ```
 
 ## Codex Obsidian plan capture
